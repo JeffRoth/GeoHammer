@@ -47,6 +47,7 @@ import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Component;
 
 import java.util.AbstractList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Objects;
 
@@ -284,6 +285,7 @@ public class StatisticsTool extends ToolView {
         Label min;
         Label max;
         Label avg;
+        Label median;
         Label range;
 
         // index
@@ -297,29 +299,33 @@ public class StatisticsTool extends ToolView {
             Label minHeader = createHeaderLabel("min");
             Label maxHeader = createHeaderLabel("max");
             Label avgHeader = createHeaderLabel("average");
+            Label medianHeader = createHeaderLabel("median");
             Label rangeHeader = createHeaderLabel("range");
 
             count = createValueLabel(NO_VALUE);
             min = createValueLabel(NO_VALUE);
             max = createValueLabel(NO_VALUE);
             avg = createValueLabel(NO_VALUE);
+            median = createValueLabel(NO_VALUE);
             range = createValueLabel(NO_VALUE);
 
             add(countHeader, 0, 0);
             add(minHeader, 1, 0);
             add(maxHeader, 2, 0);
             add(avgHeader, 3, 0);
-            add(rangeHeader, 4, 0);
+            add(medianHeader, 4, 0);
+            add(rangeHeader, 5, 0);
 
             add(count, 0, 1);
             add(min, 1, 1);
             add(max, 2, 1);
             add(avg, 3, 1);
-            add(range, 4, 1);
+            add(median, 4, 1);
+            add(range, 5, 1);
 
-            for (int i = 0; i < 5; i++) {
+            for (int i = 0; i < 6; i++) {
                 ColumnConstraints columnConstraints = new ColumnConstraints();
-                columnConstraints.setPercentWidth(20);
+                columnConstraints.setPercentWidth(100.0 / 6);
                 columnConstraints.setHalignment(HPos.CENTER);
                 columnConstraints.setHgrow(Priority.ALWAYS);
                 getColumnConstraints().add(columnConstraints);
@@ -385,6 +391,7 @@ public class StatisticsTool extends ToolView {
                 min.setText(NO_VALUE);
                 max.setText(NO_VALUE);
                 avg.setText(NO_VALUE);
+                median.setText(NO_VALUE);
                 range.setText(NO_VALUE);
                 return;
             }
@@ -397,6 +404,7 @@ public class StatisticsTool extends ToolView {
                 min.setText(NO_VALUE);
                 max.setText(NO_VALUE);
                 avg.setText(NO_VALUE);
+                median.setText(NO_VALUE);
                 range.setText(NO_VALUE);
                 return;
             }
@@ -408,12 +416,33 @@ public class StatisticsTool extends ToolView {
             double minValue = minMaxIndex.queryMin(l, r);
             double maxValue = minMaxIndex.queryMax(l, r);
             double avgValue = avgIndex.queryAvg(l, r);
+            double medianValue = findMedian(l, r, countValue);
 
             count.setText(Integer.toString(countValue));
             min.setText(formatValue(minValue));
             max.setText(formatValue(maxValue));
             avg.setText(formatValue(avgValue));
+            median.setText(formatValue(medianValue));
             range.setText(formatValue(maxValue - minValue));
+        }
+
+        private double findMedian(int from, int to, int count) {
+            if (count == 0 || chart == null) {
+                return Double.NaN;
+            }
+            double[] values = new double[count];
+            int valueIndex = 0;
+            List<GeoData> data = chart.getFile().getGeoData();
+            String series = chart.getSelectedSeriesName();
+            for (int index = from; index < to; index++) {
+                Number value = data.get(index).getNumber(series);
+                if (value != null && !Double.isNaN(value.doubleValue())) {
+                    values[valueIndex++] = value.doubleValue();
+                }
+            }
+            Arrays.sort(values, 0, valueIndex);
+            int middle = valueIndex / 2;
+            return valueIndex % 2 == 0 ? (values[middle - 1] + values[middle]) / 2 : values[middle];
         }
 
         @Nullable

@@ -22,6 +22,7 @@ public class OptionPane extends VBox {
     public OptionPane(
             SeriesSelectorView seriesSelectorView,
             StatisticsTool statisticsTool,
+            SeriesMathTool seriesMathTool,
             LowPassTool lowPassTool,
             GriddingTool griddingTool,
             TimeLagTool timeLagTool,
@@ -51,6 +52,7 @@ public class OptionPane extends VBox {
 
         toolContainer = new VBox(2 * Views.DEFAULT_SPACING,
                 new ToolToggleBox(statisticsTool, "Statistics"),
+                new ToolToggleBox(seriesMathTool, "Series math"),
                 new ToolToggleBox(surveyGeometryQcTool, "Survey geometry QC"),
                 new ToolToggleBox(griddingTool, "Gridding"),
                 new ToolToggleBox(magneticProcessingRecipeTool, "Processing recipe"),
