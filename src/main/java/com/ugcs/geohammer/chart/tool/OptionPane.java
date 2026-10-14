@@ -52,7 +52,6 @@ public class OptionPane extends VBox {
 
         toolContainer = new VBox(2 * Views.DEFAULT_SPACING,
                 new ToolToggleBox(statisticsTool, "Statistics"),
-                new ToolToggleBox(seriesMathTool, "Series math"),
                 new ToolToggleBox(surveyGeometryQcTool, "Survey geometry QC"),
                 new ToolToggleBox(griddingTool, "Gridding"),
                 new ToolToggleBox(magneticProcessingRecipeTool, "Processing recipe"),
@@ -66,6 +65,7 @@ public class OptionPane extends VBox {
                 new ToolToggleBox(regionalRemovalTool, "Regional removal"),
                 new ToolToggleBox(lowPassTool, "Low-pass filter"),
                 new ToolToggleBox(runningMedianTool, "Running median filter"),
+                new ToolToggleBox(seriesMathTool, "Series math"),
                 new ToolToggleBox(qualityControlTool, "Quality control"),
                 new ToolToggleBox(scriptExecutionTool, "Scripts"),
                 new ToolToggleBox(gprBackgroundTool, "Background"),
