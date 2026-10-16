@@ -14,7 +14,8 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 
 class MicroLevelingServiceTest {
 
-    private final MicroLevelingService service = new MicroLevelingService();
+    private final MicroLevelingService service = new MicroLevelingService(
+            new com.ugcs.geohammer.service.coordinates.CoordinateReferenceService());
 
     @Test
     void level_removesSlowResidualFromInteriorLine() {

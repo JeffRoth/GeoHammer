@@ -1,7 +1,7 @@
 package com.ugcs.geohammer.service.magnetics;
 
 import com.ugcs.geohammer.format.GeoData;
-import com.ugcs.geohammer.model.LatLon;
+import com.ugcs.geohammer.service.coordinates.CoordinateReferenceService;
 import com.ugcs.geohammer.service.gridding.GriddingResult;
 import com.ugcs.geohammer.util.Check;
 import org.jspecify.annotations.Nullable;
@@ -18,16 +18,24 @@ import java.util.Set;
 @Service
 public class MicroLevelingService {
 
+    private final CoordinateReferenceService coordinates;
+
+    public MicroLevelingService(CoordinateReferenceService coordinates) {
+        this.coordinates = coordinates;
+    }
+
     public MicroLevelingSuggestions suggestParameters(List<GeoData> data, GriddingResult noiseGrid,
                                                        Set<Integer> primaryLineIds, double primaryLineSpacing) {
         Check.notEmpty(data);
         Check.notNull(noiseGrid);
         Check.notEmpty(primaryLineIds);
         Check.condition(primaryLineSpacing > 0, "Primary-line spacing must be positive");
+        SpatialSurveyCoordinates spatial = SpatialSurveyCoordinates.of(data, coordinates);
         List<Double> samples = new ArrayList<>();
         for (GeoData value : data) {
-            if (!primaryLineIds.contains(value.getLineOrDefault(0)) || value.getLatLon() == null) continue;
-            double noise = sampleGrid(noiseGrid, value.getLatLon());
+            SpatialSurveyCoordinates.SpatialPoint point = spatial.point(value);
+            if (!primaryLineIds.contains(value.getLineOrDefault(0)) || point == null) continue;
+            double noise = sampleGrid(noiseGrid, spatial.transform(point, noiseGrid.coordinates().epsgCode()));
             if (Double.isFinite(noise)) samples.add(noise);
         }
         Check.condition(!samples.isEmpty(), "The noise grid does not overlap any primary-line samples");
@@ -45,8 +53,10 @@ public class MicroLevelingService {
         Check.notEmpty(data);
         Check.notNull(noiseGrid);
         Check.notNull(options);
+        SpatialSurveyCoordinates spatial = SpatialSurveyCoordinates.of(data, coordinates);
         List<@Nullable Number> corrections = empty(data.size());
-        Map<Integer, List<GridSample>> lines = collectGridSamples(data, options.inputSeries(), options.primaryLineIds(), noiseGrid);
+        Map<Integer, List<GridSample>> lines = collectGridSamples(data, options.inputSeries(), options.primaryLineIds(),
+                noiseGrid, spatial);
         for (List<GridSample> line : lines.values()) {
             smoothAndLimit(line, options.smoothingWavelength(), options.maximumCorrection(), corrections);
         }
@@ -103,27 +113,33 @@ public class MicroLevelingService {
             if (field == null || !Double.isFinite(field.doubleValue())) {
                 continue;
             }
+            var location = value.getLatLon();
+            SpatialSurveyCoordinates.SpatialPoint point = location != null
+                    ? new SpatialSurveyCoordinates.SpatialPoint(location.getLonDgr(), location.getLatDgr(), location)
+                    : null;
             samplesByLine.computeIfAbsent(value.getLineOrDefault(0), ignored -> new ArrayList<>())
-                    .add(new Sample(index, field.doubleValue(), value.getLatLon()));
+                    .add(new Sample(index, field.doubleValue(), point));
         }
         return samplesByLine;
     }
 
-    private static Map<Integer, List<GridSample>> collectGridSamples(List<GeoData> data, String series, Set<Integer> primaryLines,
-                                                                       GriddingResult grid) {
+    private Map<Integer, List<GridSample>> collectGridSamples(List<GeoData> data, String series, Set<Integer> primaryLines,
+                                                               GriddingResult grid, SpatialSurveyCoordinates spatial) {
         Map<Integer, List<GridSample>> result = new LinkedHashMap<>();
         for (int index = 0; index < data.size(); index++) {
             GeoData value = data.get(index);
-            if (!primaryLines.contains(value.getLineOrDefault(0)) || value.getNumber(series) == null || value.getLatLon() == null) {
+            SpatialSurveyCoordinates.SpatialPoint point = spatial.point(value);
+            if (!primaryLines.contains(value.getLineOrDefault(0)) || value.getNumber(series) == null || point == null) {
                 continue;
             }
-            double noise = sampleGrid(grid, value.getLatLon());
+            SpatialSurveyCoordinates.SpatialPoint gridPoint = spatial.transform(point, grid.coordinates().epsgCode());
+            double noise = sampleGrid(grid, gridPoint);
             if (!Double.isFinite(noise)) {
                 continue;
             }
             List<GridSample> line = result.computeIfAbsent(value.getLineOrDefault(0), ignored -> new ArrayList<>());
-            double distance = line.isEmpty() ? 0 : line.getLast().distance() + line.getLast().location().getDistance(value.getLatLon());
-            line.add(new GridSample(index, value.getLatLon(), distance, noise));
+            double distance = line.isEmpty() ? 0 : line.getLast().distance() + spatial.distance(line.getLast().location(), point);
+            line.add(new GridSample(index, point, distance, noise));
         }
         return result;
     }
@@ -146,12 +162,12 @@ public class MicroLevelingService {
         }
     }
 
-    private static double sampleGrid(GriddingResult grid, LatLon location) {
+    private static double sampleGrid(GriddingResult grid, SpatialSurveyCoordinates.SpatialPoint location) {
         float[][] values = grid.grid();
-        double x = (location.getLonDgr() - grid.minLatLon().getLonDgr())
-                / (grid.maxLatLon().getLonDgr() - grid.minLatLon().getLonDgr()) * values.length - 0.5;
-        double y = (location.getLatDgr() - grid.minLatLon().getLatDgr())
-                / (grid.maxLatLon().getLatDgr() - grid.minLatLon().getLatDgr()) * values[0].length - 0.5;
+        double x = (location.x() - grid.coordinates().minX())
+                / grid.coordinates().width() * values.length - 0.5;
+        double y = (location.y() - grid.coordinates().minY())
+                / grid.coordinates().height() * values[0].length - 0.5;
         int x0 = (int) Math.floor(x);
         int y0 = (int) Math.floor(y);
         if (x0 < 0 || y0 < 0 || x0 + 1 >= values.length || y0 + 1 >= values[0].length) return Double.NaN;
@@ -211,10 +227,10 @@ public class MicroLevelingService {
                 : sorted.get(middle);
     }
 
-    private record Sample(int dataIndex, double value, @Nullable LatLon latLon) {
+    private record Sample(int dataIndex, double value, SpatialSurveyCoordinates.SpatialPoint location) {
     }
 
-    private record GridSample(int dataIndex, LatLon location, double distance, double noise) {
+    private record GridSample(int dataIndex, SpatialSurveyCoordinates.SpatialPoint location, double distance, double noise) {
     }
 
     private static class Line {
@@ -245,16 +261,16 @@ public class MicroLevelingService {
         }
 
         private boolean hasDirection() {
-            return samples.getFirst().latLon != null && samples.getLast().latLon != null;
+            return samples.getFirst().location != null && samples.getLast().location != null;
         }
 
         private double dotDirection(Line other) {
-            LatLon start = samples.getFirst().latLon;
-            LatLon end = samples.getLast().latLon;
-            LatLon otherStart = other.samples.getFirst().latLon;
-            LatLon otherEnd = other.samples.getLast().latLon;
-            return (end.getLatDgr() - start.getLatDgr()) * (otherEnd.getLatDgr() - otherStart.getLatDgr())
-                    + (end.getLonDgr() - start.getLonDgr()) * (otherEnd.getLonDgr() - otherStart.getLonDgr());
+            SpatialSurveyCoordinates.SpatialPoint start = samples.getFirst().location;
+            SpatialSurveyCoordinates.SpatialPoint end = samples.getLast().location;
+            SpatialSurveyCoordinates.SpatialPoint otherStart = other.samples.getFirst().location;
+            SpatialSurveyCoordinates.SpatialPoint otherEnd = other.samples.getLast().location;
+            return (end.x() - start.x()) * (otherEnd.x() - otherStart.x())
+                    + (end.y() - start.y()) * (otherEnd.y() - otherStart.y());
         }
 
         private void reverse() {

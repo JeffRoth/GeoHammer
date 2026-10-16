@@ -1200,6 +1200,20 @@ public class SensorLineChart extends Chart {
                 "Derived series must contain one value per measurement");
 
         createFileColumn(seriesName, sourceSeries);
+        updateDerivedSeries(seriesName, values);
+    }
+
+    public void createDerivedSeries(String seriesName, List<@Nullable Number> values) {
+        Check.notEmpty(seriesName);
+        Check.notEmpty(values);
+        Check.condition(values.size() == file.getGeoData().size(),
+                "Derived series must contain one value per measurement");
+
+        createFileColumn(seriesName, null);
+        updateDerivedSeries(seriesName, values);
+    }
+
+    private void updateDerivedSeries(String seriesName, List<@Nullable Number> values) {
         setFileColumnValues(seriesName, values);
 
         Platform.runLater(() -> {

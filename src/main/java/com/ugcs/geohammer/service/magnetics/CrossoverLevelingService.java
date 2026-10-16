@@ -2,6 +2,7 @@ package com.ugcs.geohammer.service.magnetics;
 
 import com.ugcs.geohammer.format.GeoData;
 import com.ugcs.geohammer.model.LatLon;
+import com.ugcs.geohammer.service.coordinates.CoordinateReferenceService;
 import com.ugcs.geohammer.util.Check;
 import org.jspecify.annotations.Nullable;
 import org.springframework.stereotype.Service;
@@ -16,16 +17,23 @@ import java.util.Set;
 @Service
 public class CrossoverLevelingService {
 
+    private final CoordinateReferenceService coordinates;
+
+    public CrossoverLevelingService(CoordinateReferenceService coordinates) {
+        this.coordinates = coordinates;
+    }
+
     public CrossoverLevelingResult level(List<GeoData> data, String series, Set<Integer> tieLines) {
         Check.notEmpty(data);
         Check.notEmpty(series);
         Check.notEmpty(tieLines);
 
-        Map<Integer, List<Sample>> lines = collectLines(data, series);
+        SpatialSurveyCoordinates spatial = SpatialSurveyCoordinates.of(data, coordinates);
+        Map<Integer, List<Sample>> lines = collectLines(data, series, spatial);
         for (Integer tieLine : tieLines) {
             Check.condition(lines.containsKey(tieLine), "Tie line " + tieLine + " is not present in this survey");
         }
-        List<Crossover> crossovers = findCrossovers(lines, tieLines);
+        List<Crossover> crossovers = findCrossovers(lines, tieLines, spatial);
         Check.condition(!crossovers.isEmpty(), "No survey/tie-line crossovers were found");
 
         Map<Integer, List<Double>> corrections = new LinkedHashMap<>();
@@ -52,23 +60,24 @@ public class CrossoverLevelingService {
                 Math.sqrt(sumSquares / crossovers.size()));
     }
 
-    private static Map<Integer, List<Sample>> collectLines(List<GeoData> data, String series) {
+    private static Map<Integer, List<Sample>> collectLines(List<GeoData> data, String series, SpatialSurveyCoordinates spatial) {
         Map<Integer, List<Sample>> lines = new LinkedHashMap<>();
         for (GeoData value : data) {
-            LatLon location = value.getLatLon();
+            SpatialSurveyCoordinates.SpatialPoint location = spatial.point(value);
             Number field = value.getNumber(series);
             if (location == null || field == null || !Double.isFinite(field.doubleValue())) {
                 continue;
             }
             lines.computeIfAbsent(value.getLineOrDefault(0), ignored -> new ArrayList<>())
-                    .add(new Sample(location.getLatDgr(), location.getLonDgr(), field.doubleValue()));
+                    .add(new Sample(location.x(), location.y(), field.doubleValue()));
         }
         lines.values().removeIf(line -> line.size() < 2);
         Check.condition(!lines.isEmpty(), "Survey has no lines with coordinates and magnetic values");
         return lines;
     }
 
-    private static List<Crossover> findCrossovers(Map<Integer, List<Sample>> lines, Set<Integer> tieLines) {
+    private static List<Crossover> findCrossovers(Map<Integer, List<Sample>> lines, Set<Integer> tieLines,
+                                                   SpatialSurveyCoordinates spatial) {
         List<Crossover> crossovers = new ArrayList<>();
         for (Map.Entry<Integer, List<Sample>> survey : lines.entrySet()) {
             if (tieLines.contains(survey.getKey())) {
@@ -79,7 +88,7 @@ public class CrossoverLevelingService {
                 for (int i = 1; i < survey.getValue().size(); i++) {
                     for (int j = 1; j < tie.size(); j++) {
                         Crossover crossover = intersect(survey.getKey(), tieLine,
-                                survey.getValue().get(i - 1), survey.getValue().get(i), tie.get(j - 1), tie.get(j));
+                                survey.getValue().get(i - 1), survey.getValue().get(i), tie.get(j - 1), tie.get(j), spatial);
                         if (crossover != null) {
                             crossovers.add(crossover);
                         }
@@ -90,24 +99,26 @@ public class CrossoverLevelingService {
         return crossovers;
     }
 
-    private static @Nullable Crossover intersect(int surveyLine, int tieLine, Sample a, Sample b, Sample c, Sample d) {
-        double denominator = (b.longitude - a.longitude) * (d.latitude - c.latitude)
-                - (b.latitude - a.latitude) * (d.longitude - c.longitude);
+    private static @Nullable Crossover intersect(int surveyLine, int tieLine, Sample a, Sample b, Sample c, Sample d,
+                                                  SpatialSurveyCoordinates spatial) {
+        double denominator = (b.x - a.x) * (d.y - c.y)
+                - (b.y - a.y) * (d.x - c.x);
         if (Math.abs(denominator) < 1e-12) {
             return null;
         }
-        double t = ((c.longitude - a.longitude) * (d.latitude - c.latitude)
-                - (c.latitude - a.latitude) * (d.longitude - c.longitude)) / denominator;
-        double u = ((c.longitude - a.longitude) * (b.latitude - a.latitude)
-                - (c.latitude - a.latitude) * (b.longitude - a.longitude)) / denominator;
+        double t = ((c.x - a.x) * (d.y - c.y)
+                - (c.y - a.y) * (d.x - c.x)) / denominator;
+        double u = ((c.x - a.x) * (b.y - a.y)
+                - (c.y - a.y) * (b.x - a.x)) / denominator;
         if (t < 0 || t > 1 || u < 0 || u > 1) {
             return null;
         }
-        double latitude = a.latitude + t * (b.latitude - a.latitude);
-        double longitude = a.longitude + t * (b.longitude - a.longitude);
+        double x = a.x + t * (b.x - a.x);
+        double y = a.y + t * (b.y - a.y);
         double surveyField = a.field + t * (b.field - a.field);
         double tieField = c.field + u * (d.field - c.field);
-        return new Crossover(surveyLine, tieLine, latitude, longitude, surveyField - tieField);
+        LatLon location = spatial.geographic(x, y);
+        return new Crossover(surveyLine, tieLine, location.getLatDgr(), location.getLonDgr(), surveyField - tieField);
     }
 
     private static double mean(List<Double> values) {
@@ -118,6 +129,6 @@ public class CrossoverLevelingService {
         return sum / values.size();
     }
 
-    private record Sample(double latitude, double longitude, double field) {
+    private record Sample(double x, double y, double field) {
     }
 }

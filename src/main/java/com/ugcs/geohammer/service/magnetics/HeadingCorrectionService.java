@@ -1,7 +1,7 @@
 package com.ugcs.geohammer.service.magnetics;
 
 import com.ugcs.geohammer.format.GeoData;
-import com.ugcs.geohammer.model.LatLon;
+import com.ugcs.geohammer.service.coordinates.CoordinateReferenceService;
 import com.ugcs.geohammer.util.Check;
 import org.jspecify.annotations.Nullable;
 import org.springframework.stereotype.Service;
@@ -20,14 +20,19 @@ public class HeadingCorrectionService {
 
     private static final double CELL_SIZE_METERS = 100;
 
-    private static final double METERS_PER_DEGREE = 111_320;
+    private final CoordinateReferenceService coordinates;
+
+    public HeadingCorrectionService(CoordinateReferenceService coordinates) {
+        this.coordinates = coordinates;
+    }
 
     public HeadingCorrectionResult correct(List<GeoData> data, String series, int headingBins) {
         Check.notEmpty(data);
         Check.notEmpty(series);
         Check.condition(headingBins >= 4 && headingBins <= 36, "Heading correction requires between 4 and 36 bins");
 
-        Map<Integer, List<Sample>> lines = collectLines(data, series);
+        SpatialSurveyCoordinates spatial = SpatialSurveyCoordinates.of(data, coordinates);
+        Map<Integer, List<Sample>> lines = collectLines(data, series, spatial);
         List<HeadingCrossover> crossovers = findCrossovers(lines, headingBins);
         Check.condition(!crossovers.isEmpty(), "No line crossovers with different headings were found");
 
@@ -53,17 +58,20 @@ public class HeadingCorrectionService {
         return new HeadingCorrectionResult(corrected, crossovers, corrections, rmsError(crossovers, corrections));
     }
 
-    private static Map<Integer, List<Sample>> collectLines(List<GeoData> data, String series) {
+    private static Map<Integer, List<Sample>> collectLines(List<GeoData> data, String series, SpatialSurveyCoordinates spatial) {
         Map<Integer, List<Sample>> lines = new LinkedHashMap<>();
         for (int index = 0; index < data.size(); index++) {
             GeoData value = data.get(index);
-            LatLon location = value.getLatLon();
+            SpatialSurveyCoordinates.SpatialPoint location = spatial.point(value);
+            if (location != null && spatial.isGeographic()) {
+                location = spatial.transform(location, 3857);
+            }
             Number field = value.getNumber(series);
             if (location == null || field == null || !Double.isFinite(field.doubleValue())) {
                 continue;
             }
             lines.computeIfAbsent(value.getLineOrDefault(0), ignored -> new ArrayList<>())
-                    .add(new Sample(index, location.getLatDgr(), location.getLonDgr(), field.doubleValue()));
+                    .add(new Sample(index, location.x(), location.y(), field.doubleValue()));
         }
         lines.values().removeIf(line -> line.size() < 2);
         Check.condition(lines.size() > 1, "Heading correction requires at least two lines with coordinates and values");
@@ -72,36 +80,23 @@ public class HeadingCorrectionService {
 
     private static List<HeadingCrossover> findCrossovers(Map<Integer, List<Sample>> lines, int headingBins) {
         List<HeadingCrossover> crossovers = new ArrayList<>();
-        double referenceLatitude = averageLatitude(lines);
         Map<GridCell, List<Segment>> index = new HashMap<>();
         for (Map.Entry<Integer, List<Sample>> entry : lines.entrySet()) {
             List<Sample> line = entry.getValue();
             for (int sampleIndex = 1; sampleIndex < line.size(); sampleIndex++) {
                 Segment segment = new Segment(entry.getKey(), line.get(sampleIndex - 1), line.get(sampleIndex));
-                indexSegment(index, segment, referenceLatitude);
+                indexSegment(index, segment);
             }
         }
         for (Map.Entry<GridCell, List<Segment>> entry : index.entrySet()) {
-            findCellCrossovers(entry.getKey(), entry.getValue(), headingBins, referenceLatitude, crossovers);
+            findCellCrossovers(entry.getKey(), entry.getValue(), headingBins, crossovers);
         }
         return crossovers;
     }
 
-    private static double averageLatitude(Map<Integer, List<Sample>> lines) {
-        double sum = 0;
-        int count = 0;
-        for (List<Sample> line : lines.values()) {
-            for (Sample sample : line) {
-                sum += sample.latitude;
-                count++;
-            }
-        }
-        return sum / count;
-    }
-
-    private static void indexSegment(Map<GridCell, List<Segment>> index, Segment segment, double referenceLatitude) {
-        GridCell first = cellOf(segment.first, referenceLatitude);
-        GridCell second = cellOf(segment.second, referenceLatitude);
+    private static void indexSegment(Map<GridCell, List<Segment>> index, Segment segment) {
+        GridCell first = cellOf(segment.first);
+        GridCell second = cellOf(segment.second);
         int minX = Math.min(first.x, second.x);
         int maxX = Math.max(first.x, second.x);
         int minY = Math.min(first.y, second.y);
@@ -114,7 +109,7 @@ public class HeadingCorrectionService {
     }
 
     private static void findCellCrossovers(GridCell cell, List<Segment> segments, int headingBins,
-                                           double referenceLatitude, List<HeadingCrossover> crossovers) {
+                                           List<HeadingCrossover> crossovers) {
         for (int firstIndex = 0; firstIndex < segments.size(); firstIndex++) {
             Segment first = segments.get(firstIndex);
             for (int secondIndex = firstIndex + 1; secondIndex < segments.size(); secondIndex++) {
@@ -123,7 +118,7 @@ public class HeadingCorrectionService {
                     continue;
                 }
                 Intersection intersection = intersect(first, second, headingBins);
-                if (intersection != null && cellOf(intersection.latitude, intersection.longitude, referenceLatitude).equals(cell)
+                if (intersection != null && cellOf(intersection.x, intersection.y).equals(cell)
                         && intersection.crossover.firstHeadingBin() != intersection.crossover.secondHeadingBin()) {
                     crossovers.add(intersection.crossover);
                 }
@@ -136,15 +131,15 @@ public class HeadingCorrectionService {
         Sample b = first.second;
         Sample c = second.first;
         Sample d = second.second;
-        double denominator = (b.longitude - a.longitude) * (d.latitude - c.latitude)
-                - (b.latitude - a.latitude) * (d.longitude - c.longitude);
+        double denominator = (b.x - a.x) * (d.y - c.y)
+                - (b.y - a.y) * (d.x - c.x);
         if (Math.abs(denominator) < 1e-12) {
             return null;
         }
-        double t = ((c.longitude - a.longitude) * (d.latitude - c.latitude)
-                - (c.latitude - a.latitude) * (d.longitude - c.longitude)) / denominator;
-        double u = ((c.longitude - a.longitude) * (b.latitude - a.latitude)
-                - (c.latitude - a.latitude) * (b.longitude - a.longitude)) / denominator;
+        double t = ((c.x - a.x) * (d.y - c.y)
+                - (c.y - a.y) * (d.x - c.x)) / denominator;
+        double u = ((c.x - a.x) * (b.y - a.y)
+                - (c.y - a.y) * (b.x - a.x)) / denominator;
         if (t < 0 || t > 1 || u < 0 || u > 1) {
             return null;
         }
@@ -152,18 +147,16 @@ public class HeadingCorrectionService {
         double secondField = c.field + u * (d.field - c.field);
         HeadingCrossover crossover = new HeadingCrossover(first.line, second.line, headingBin(a, b, headingBins),
                 headingBin(c, d, headingBins), firstField - secondField);
-        double latitude = a.latitude + t * (b.latitude - a.latitude);
-        double longitude = a.longitude + t * (b.longitude - a.longitude);
-        return new Intersection(crossover, latitude, longitude);
+        double x = a.x + t * (b.x - a.x);
+        double y = a.y + t * (b.y - a.y);
+        return new Intersection(crossover, x, y);
     }
 
-    private static GridCell cellOf(Sample sample, double referenceLatitude) {
-        return cellOf(sample.latitude, sample.longitude, referenceLatitude);
+    private static GridCell cellOf(Sample sample) {
+        return cellOf(sample.x, sample.y);
     }
 
-    private static GridCell cellOf(double latitude, double longitude, double referenceLatitude) {
-        double x = longitude * METERS_PER_DEGREE * Math.cos(Math.toRadians(referenceLatitude));
-        double y = latitude * METERS_PER_DEGREE;
+    private static GridCell cellOf(double x, double y) {
         return new GridCell((int) Math.floor(x / CELL_SIZE_METERS), (int) Math.floor(y / CELL_SIZE_METERS));
     }
 
@@ -257,9 +250,7 @@ public class HeadingCorrectionService {
     }
 
     private static int headingBin(Sample start, Sample end, int headingBins) {
-        double longitude = (end.longitude - start.longitude) * Math.cos(Math.toRadians((start.latitude + end.latitude) / 2));
-        double latitude = end.latitude - start.latitude;
-        double heading = Math.toDegrees(Math.atan2(longitude, latitude));
+        double heading = Math.toDegrees(Math.atan2(end.x - start.x, end.y - start.y));
         double normalizedHeading = heading < 0 ? heading + 360 : heading;
         return Math.min((int) (normalizedHeading / 360 * headingBins), headingBins - 1);
     }
@@ -274,7 +265,7 @@ public class HeadingCorrectionService {
         return Math.sqrt(sumSquares / crossovers.size());
     }
 
-    private record Sample(int dataIndex, double latitude, double longitude, double field) {
+    private record Sample(int dataIndex, double x, double y, double field) {
     }
 
     private record Segment(int line, Sample first, Sample second) {
@@ -283,6 +274,6 @@ public class HeadingCorrectionService {
     private record GridCell(int x, int y) {
     }
 
-    private record Intersection(HeadingCrossover crossover, double latitude, double longitude) {
+    private record Intersection(HeadingCrossover crossover, double x, double y) {
     }
 }

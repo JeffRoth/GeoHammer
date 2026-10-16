@@ -22,6 +22,11 @@ public final class MissingValues {
         if (Nulls.isNullOrEmpty(values)) {
             return false;
         }
+        ColumnSchema schema = GeoData.getSchema(values);
+        if (schema == null || schema.getHeaderBySemantic(Semantic.LATITUDE.getName()) == null
+                || schema.getHeaderBySemantic(Semantic.LONGITUDE.getName()) == null) {
+            return false;
+        }
         for (GeoData value : values) {
             if (value.getLatitude() == null || value.getLongitude() == null) {
                 return true;

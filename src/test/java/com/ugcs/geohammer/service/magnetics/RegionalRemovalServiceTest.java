@@ -15,7 +15,8 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 
 class RegionalRemovalServiceTest {
 
-    private final RegionalRemovalService service = new RegionalRemovalService();
+    private final RegionalRemovalService service = new RegionalRemovalService(
+            new com.ugcs.geohammer.service.coordinates.CoordinateReferenceService());
 
     @Test
     void remove_subtractsLinearRegionalField() {

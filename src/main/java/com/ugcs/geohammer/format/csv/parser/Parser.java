@@ -333,10 +333,6 @@ public abstract class Parser {
 			}
 		}
 
-		if (fileSchema.latitudeColumn == null || fileSchema.longitudeColumn == null) {
-			throw new ParseException("Missing position headers: " + latitudeHeader + ", " + longitudeHeader + ".");
-		}
-
 		return fileSchema;
 	}
 
@@ -350,13 +346,15 @@ public abstract class Parser {
 		}
 
 		for (Column column : valueSchema) {
-			// explicitly hide marks and show lines
-			String semantic = column.getSemantic();
-			if (Objects.equals(semantic, Semantic.MARK.getName())) {
-				column.setDisplay(false);
-			} else if (Objects.equals(semantic, Semantic.LINE.getName())) {
-				column.setDisplay(true);
-			} else {
+            // explicitly hide marks and show line and coordinate series
+            String semantic = column.getSemantic();
+            if (Objects.equals(semantic, Semantic.MARK.getName())) {
+                column.setDisplay(false);
+            } else if (Objects.equals(semantic, Semantic.LINE.getName())
+                    || Objects.equals(semantic, Semantic.LATITUDE.getName())
+                    || Objects.equals(semantic, Semantic.LONGITUDE.getName())) {
+                column.setDisplay(true);
+            } else {
 				column.setDisplay(displayHeaders.contains(column.getHeader()));
 			}
 		}
@@ -395,12 +393,14 @@ public abstract class Parser {
         }
 
         // treat (0, 0) as a missing fix so it gets interpolated later
-        Number latitude = geoData.getNumber(fileSchema.latitudeColumn.valueIndex);
-		Number longitude = geoData.getNumber(fileSchema.longitudeColumn.valueIndex);
-        if (latitude == null || longitude == null
-				|| latitude.doubleValue() == 0.0 && longitude.doubleValue() == 0.0) {
-            geoData.setValue(fileSchema.latitudeColumn.valueIndex, null);
-            geoData.setValue(fileSchema.longitudeColumn.valueIndex, null);
+        if (fileSchema.latitudeColumn != null && fileSchema.longitudeColumn != null) {
+            Number latitude = geoData.getNumber(fileSchema.latitudeColumn.valueIndex);
+            Number longitude = geoData.getNumber(fileSchema.longitudeColumn.valueIndex);
+            if (latitude == null || longitude == null
+                    || latitude.doubleValue() == 0.0 && longitude.doubleValue() == 0.0) {
+                geoData.setValue(fileSchema.latitudeColumn.valueIndex, null);
+                geoData.setValue(fileSchema.longitudeColumn.valueIndex, null);
+            }
         }
         return geoData;
     }

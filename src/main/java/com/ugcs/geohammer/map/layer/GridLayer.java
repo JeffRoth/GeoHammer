@@ -27,8 +27,10 @@ import com.ugcs.geohammer.model.event.FileRenameEvent;
 import com.ugcs.geohammer.model.event.FileClosedEvent;
 import com.ugcs.geohammer.model.event.GridUpdatedEvent;
 import com.ugcs.geohammer.service.gridding.GriddingFilter;
+import com.ugcs.geohammer.service.gridding.GridCoordinates;
 import com.ugcs.geohammer.service.gridding.GriddingParams;
 import com.ugcs.geohammer.service.gridding.GriddingResult;
+import com.ugcs.geohammer.service.coordinates.CoordinateReferenceService;
 import com.ugcs.geohammer.service.palette.Palette;
 import com.ugcs.geohammer.model.event.FileSelectedEvent;
 import com.ugcs.geohammer.model.event.WhatChanged;
@@ -77,6 +79,8 @@ public final class GridLayer extends BaseLayer {
 
     private final ExecutorService executor;
 
+    private final CoordinateReferenceService coordinates;
+
     private final ConcurrentMap<SgyFile, SinglePendingExecutor> pendingExecutors = new ConcurrentHashMap<>();
 
     @SuppressWarnings({"NullAway.Init"})
@@ -95,9 +99,10 @@ public final class GridLayer extends BaseLayer {
 
     private volatile float opacity = 1.0f;
 
-    public GridLayer(Model model, ExecutorService executor) {
+    public GridLayer(Model model, ExecutorService executor, CoordinateReferenceService coordinates) {
         this.model = model;
         this.executor = executor;
+        this.coordinates = coordinates;
 
         q = new RenderQueue(model) {
             public void draw(BufferedImage image, MapField field) {
@@ -281,32 +286,29 @@ public final class GridLayer extends BaseLayer {
             return;
         }
 
-        var minLatLon = grid.minLatLon;
-        var maxLatLon = grid.maxLatLon;
-
         int gridWidth = grid.values.length;
         int gridHeight = gridWidth > 0 ? grid.values[0].length : 0;
         if (gridWidth == 0 || gridHeight == 0) {
             return;
         }
 
-        double lonStep = (maxLatLon.getLonDgr() - minLatLon.getLonDgr()) / gridWidth;
-        double latStep = (maxLatLon.getLatDgr() - minLatLon.getLatDgr()) / gridHeight;
-
-        int[] cellX = new int[gridWidth + 1];
+        int[][] cellX = new int[gridWidth + 1][gridHeight + 1];
+        int[][] cellY = new int[gridWidth + 1][gridHeight + 1];
         for (int i = 0; i <= gridWidth; i++) {
-            double lon = minLatLon.getLonDgr() + i * lonStep;
-            cellX[i] = (int) Math.round(field.latLonToScreen(new LatLon(minLatLon.getLatDgr(), lon)).getX());
-        }
-        int[] cellY = new int[gridHeight + 1];
-        for (int j = 0; j <= gridHeight; j++) {
-            double lat = minLatLon.getLatDgr() + j * latStep;
-            cellY[j] = (int) Math.round(field.latLonToScreen(new LatLon(lat, minLatLon.getLonDgr())).getY());
+            double x = grid.coordinates.minX() + grid.coordinates.width() * i / gridWidth;
+            for (int j = 0; j <= gridHeight; j++) {
+                double y = grid.coordinates.minY() + grid.coordinates.height() * j / gridHeight;
+                LatLon location = coordinates.geographic(x, y, grid.coordinates.epsgCode());
+                cellX[i][j] = (int) Math.round(field.latLonToScreen(location).getX());
+                cellY[i][j] = (int) Math.round(field.latLonToScreen(location).getY());
+            }
         }
 
         Composite composite = g2.getComposite();
         g2.setComposite(AlphaComposite.getInstance(AlphaComposite.SRC_OVER, opacity));
         try {
+            int[] polygonX = new int[4];
+            int[] polygonY = new int[4];
             for (int i = 0; i < gridWidth; i++) {
                 for (int j = 0; j < gridHeight; j++) {
                     try {
@@ -336,9 +338,15 @@ public final class GridLayer extends BaseLayer {
 
                         g2.setColor(color);
 
-                        // cellY descend with the row index, as screen y grows southward
-                        g2.fillRect(cellX[i], cellY[j + 1],
-                                cellX[i + 1] - cellX[i], cellY[j] - cellY[j + 1]);
+                        polygonX[0] = cellX[i][j];
+                        polygonX[1] = cellX[i + 1][j];
+                        polygonX[2] = cellX[i + 1][j + 1];
+                        polygonX[3] = cellX[i][j + 1];
+                        polygonY[0] = cellY[i][j];
+                        polygonY[1] = cellY[i + 1][j];
+                        polygonY[2] = cellY[i + 1][j + 1];
+                        polygonY[3] = cellY[i][j + 1];
+                        g2.fillPolygon(polygonX, polygonY, 4);
                     } catch (Exception e) {
                         log.error("Error", e);
                     }
@@ -387,7 +395,7 @@ public final class GridLayer extends BaseLayer {
                 : null;
     }
 
-    private static OptionalDouble getGridValue(Grid grid, LatLon location) {
+    private OptionalDouble getGridValue(Grid grid, LatLon location) {
         if (location == null) {
             return OptionalDouble.empty();
         }
@@ -399,23 +407,21 @@ public final class GridLayer extends BaseLayer {
             return OptionalDouble.empty();
         }
 
-        double minLongitude = grid.minLatLon().getLonDgr();
-        double maxLongitude = grid.maxLatLon().getLonDgr();
-        double minLatitude = grid.minLatLon().getLatDgr();
-        double maxLatitude = grid.maxLatLon().getLatDgr();
-        if (location.getLonDgr() < minLongitude || location.getLonDgr() > maxLongitude
-                || location.getLatDgr() < minLatitude || location.getLatDgr() > maxLatitude) {
+        double xCoordinate = grid.coordinates().x(location, coordinates);
+        double yCoordinate = grid.coordinates().y(location, coordinates);
+        if (xCoordinate < grid.coordinates().minX() || xCoordinate > grid.coordinates().maxX()
+                || yCoordinate < grid.coordinates().minY() || yCoordinate > grid.coordinates().maxY()) {
             return OptionalDouble.empty();
         }
 
-        double longitudeSpan = maxLongitude - minLongitude;
-        double latitudeSpan = maxLatitude - minLatitude;
-        if (longitudeSpan <= 0 || latitudeSpan <= 0) {
+        double widthSpan = grid.coordinates().width();
+        double heightSpan = grid.coordinates().height();
+        if (widthSpan <= 0 || heightSpan <= 0) {
             return OptionalDouble.empty();
         }
 
-        int x = Math.min((int) ((location.getLonDgr() - minLongitude) / longitudeSpan * width), width - 1);
-        int y = Math.min((int) ((location.getLatDgr() - minLatitude) / latitudeSpan * height), height - 1);
+        int x = Math.min((int) ((xCoordinate - grid.coordinates().minX()) / widthSpan * width), width - 1);
+        int y = Math.min((int) ((yCoordinate - grid.coordinates().minY()) / heightSpan * height), height - 1);
         float value = values[x][y];
         return Float.isNaN(value) ? OptionalDouble.empty() : OptionalDouble.of(value);
     }
@@ -534,6 +540,7 @@ public final class GridLayer extends BaseLayer {
                     sortedValues,
                     result.minLatLon(),
                     result.maxLatLon(),
+                    result.coordinates(),
                     range,
                     palette,
                     zFactor,
@@ -646,6 +653,7 @@ public final class GridLayer extends BaseLayer {
             float[] sortedValues,
             LatLon minLatLon,
             LatLon maxLatLon,
+            GridCoordinates coordinates,
             Range range,
             Palette palette,
             double zFactor,
