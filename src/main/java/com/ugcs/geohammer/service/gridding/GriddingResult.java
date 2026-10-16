@@ -7,6 +7,7 @@ public record GriddingResult(
         float[][] grid,
         LatLon minLatLon,
         LatLon maxLatLon,
-        GriddingParams params
+        GriddingParams params,
+        GridCoordinates coordinates
 ) {
 }

@@ -1,7 +1,11 @@
 package com.ugcs.geohammer.service.quality;
 
 import com.ugcs.geohammer.format.GeoData;
+import com.ugcs.geohammer.model.ColumnSchema;
+import com.ugcs.geohammer.model.CoordinatePair;
 import com.ugcs.geohammer.model.LatLon;
+import com.ugcs.geohammer.model.Semantic;
+import com.ugcs.geohammer.service.coordinates.CoordinatePoint;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
@@ -22,7 +26,7 @@ public class SurveyGeometryService {
     private static final double TIE_ORIENTATION_SEARCH_STEP = 0.5;
 
     public SurveyGeometryReport analyze(List<GeoData> data) {
-        List<LineGeometry> lines = collectLines(data);
+        List<LineGeometry> lines = collectLines(data, activeCoordinates(data));
         List<Double> sampleSpacing = new ArrayList<>();
         List<Double> headings = new ArrayList<>();
         for (LineGeometry line : lines) {
@@ -52,7 +56,9 @@ public class SurveyGeometryService {
     private static List<List<LatLon>> toPaths(LineFamily family) {
         List<List<LatLon>> paths = new ArrayList<>(family.lines().size());
         for (LineGeometry line : family.lines()) {
-            paths.add(List.copyOf(line.points()));
+            if (line.mapPath().size() > 1) {
+                paths.add(List.copyOf(line.mapPath()));
+            }
         }
         return List.copyOf(paths);
     }
@@ -67,10 +73,13 @@ public class SurveyGeometryService {
         return List.copyOf(ids);
     }
 
-    private static List<LineGeometry> collectLines(List<GeoData> data) {
+    private List<LineGeometry> collectLines(List<GeoData> data, CoordinatePair pair) {
         List<LineGeometry> lines = new ArrayList<>();
-        List<LatLon> points = new ArrayList<>();
+        List<SpatialPoint> points = new ArrayList<>();
         Integer currentLine = null;
+        LatLon geographicOrigin = pair.epsgCode() == 4326
+                ? geographicOrigin(data, pair)
+                : null;
         for (GeoData value : data) {
             if (value == null) {
                 continue;
@@ -81,7 +90,7 @@ public class SurveyGeometryService {
                 points = new ArrayList<>();
             }
             currentLine = line;
-            LatLon point = value.getLatLon();
+            SpatialPoint point = spatialPoint(value, pair, geographicOrigin);
             if (point != null) {
                 points.add(point);
             }
@@ -92,31 +101,80 @@ public class SurveyGeometryService {
         return lines;
     }
 
-    private static void addLine(List<LineGeometry> lines, int id, List<LatLon> points) {
+    private CoordinatePair activeCoordinates(List<GeoData> data) {
+        ColumnSchema schema = GeoData.getSchema(data);
+        if (schema != null && schema.getSpatialReference() != null && schema.getSpatialReference().activePair() != null) {
+            return schema.getSpatialReference().activePair();
+        }
+        String longitude = schema != null ? schema.getHeaderBySemantic(Semantic.LONGITUDE.getName()) : null;
+        String latitude = schema != null ? schema.getHeaderBySemantic(Semantic.LATITUDE.getName()) : null;
+        if (longitude == null || latitude == null) {
+            throw new IllegalArgumentException("Select working coordinates before analyzing survey geometry");
+        }
+        return new CoordinatePair(longitude, latitude, 4326);
+    }
+
+    private static LatLon geographicOrigin(List<GeoData> data, CoordinatePair pair) {
+        for (GeoData value : data) {
+            Number longitude = value.getNumber(pair.xSeries());
+            Number latitude = value.getNumber(pair.ySeries());
+            if (longitude != null && latitude != null) {
+                return new LatLon(latitude.doubleValue(), longitude.doubleValue());
+            }
+        }
+        return null;
+    }
+
+    private SpatialPoint spatialPoint(GeoData value, CoordinatePair pair, LatLon geographicOrigin) {
+        Number x = value.getNumber(pair.xSeries());
+        Number y = value.getNumber(pair.ySeries());
+        if (x == null || y == null) {
+            return null;
+        }
+        CoordinatePoint point;
+        if (pair.epsgCode() == 4326) {
+            if (geographicOrigin == null) {
+                return null;
+            }
+            point = new CoordinatePoint((x.doubleValue() - geographicOrigin.getLonDgr()) * METERS_PER_DEGREE
+                    * Math.cos(Math.toRadians(geographicOrigin.getLatDgr())),
+                    (y.doubleValue() - geographicOrigin.getLatDgr()) * METERS_PER_DEGREE);
+        } else {
+            point = new CoordinatePoint(x.doubleValue(), y.doubleValue());
+        }
+        return new SpatialPoint(point.x(), point.y(), value.getLatLon());
+    }
+
+    private static void addLine(List<LineGeometry> lines, int id, List<SpatialPoint> points) {
         if (points.size() < 2) {
             return;
         }
-        double latitude = 0.0;
-        double longitude = 0.0;
-        for (LatLon point : points) {
-            latitude += point.getLatDgr();
-            longitude += point.getLonDgr();
+        double x = 0.0;
+        double y = 0.0;
+        List<LatLon> mapPath = new ArrayList<>(points.size());
+        for (SpatialPoint point : points) {
+            x += point.x();
+            y += point.y();
+            if (point.mapLocation() != null) {
+                mapPath.add(point.mapLocation());
+            }
         }
-        LatLon center = new LatLon(latitude / points.size(), longitude / points.size());
-        double orientation = points.getFirst().getBearing(points.getLast()) % 180.0;
-        lines.add(new LineGeometry(id, points, center, orientation));
+        SpatialPoint first = points.getFirst();
+        SpatialPoint last = points.getLast();
+        double orientation = heading(first, last) % 180.0;
+        lines.add(new LineGeometry(id, points, new CoordinatePoint(x / points.size(), y / points.size()), orientation, mapPath));
     }
 
-    private static void collectSegments(List<LatLon> points, List<Double> sampleSpacing, List<Double> headings) {
+    private static void collectSegments(List<SpatialPoint> points, List<Double> sampleSpacing, List<Double> headings) {
         for (int i = 1; i < points.size(); i++) {
-            LatLon previous = points.get(i - 1);
-            LatLon current = points.get(i);
-            double distance = previous.getDistance(current);
+            SpatialPoint previous = points.get(i - 1);
+            SpatialPoint current = points.get(i);
+            double distance = Math.hypot(current.x() - previous.x(), current.y() - previous.y());
             if (!Double.isFinite(distance) || distance <= 0.0) {
                 continue;
             }
             sampleSpacing.add(distance);
-            headings.add(previous.getBearing(current));
+            headings.add(heading(previous, current));
         }
     }
 
@@ -176,15 +234,12 @@ public class SurveyGeometryService {
         if (family.lines().size() < 2 || !Double.isFinite(family.orientation())) {
             return offsets;
         }
-        LatLon origin = family.lines().getFirst().center();
+        CoordinatePoint origin = family.lines().getFirst().center();
         double orientation = Math.toRadians(family.orientation());
-        double cosineLatitude = Math.cos(Math.toRadians(origin.getLatDgr()));
         for (LineGeometry line : family.lines()) {
             List<Double> lineOffsets = new ArrayList<>(line.points().size());
-            for (LatLon point : line.points()) {
-                double east = (point.getLonDgr() - origin.getLonDgr()) * METERS_PER_DEGREE * cosineLatitude;
-                double north = (point.getLatDgr() - origin.getLatDgr()) * METERS_PER_DEGREE;
-                lineOffsets.add(east * Math.cos(orientation) - north * Math.sin(orientation));
+            for (SpatialPoint point : line.points()) {
+                lineOffsets.add(projectOffset(point, origin, orientation));
             }
             offsets.add(median(lineOffsets));
         }
@@ -274,14 +329,13 @@ public class SurveyGeometryService {
     }
 
     private static long calculateOrientationScore(LineFamily family, double orientation, double binWidth) {
-        LatLon origin = family.lines().getFirst().center();
+        CoordinatePoint origin = family.lines().getFirst().center();
         double radians = Math.toRadians(orientation);
-        double cosineLatitude = Math.cos(Math.toRadians(origin.getLatDgr()));
         double minimum = Double.POSITIVE_INFINITY;
         double maximum = Double.NEGATIVE_INFINITY;
         for (LineGeometry line : family.lines()) {
-            for (LatLon point : line.points()) {
-                double offset = projectOffset(point, origin, radians, cosineLatitude);
+            for (SpatialPoint point : line.points()) {
+                double offset = projectOffset(point, origin, radians);
                 minimum = Math.min(minimum, offset);
                 maximum = Math.max(maximum, offset);
             }
@@ -289,8 +343,8 @@ public class SurveyGeometryService {
         int binCount = (int) Math.ceil((maximum - minimum) / binWidth) + 1;
         int[] counts = new int[binCount];
         for (LineGeometry line : family.lines()) {
-            for (LatLon point : line.points()) {
-                double offset = projectOffset(point, origin, radians, cosineLatitude);
+            for (SpatialPoint point : line.points()) {
+                double offset = projectOffset(point, origin, radians);
                 int index = Math.min((int) ((offset - minimum) / binWidth), binCount - 1);
                 counts[Math.max(index, 0)]++;
             }
@@ -307,21 +361,20 @@ public class SurveyGeometryService {
         if (family.lines().isEmpty() || !Double.isFinite(orientation)) {
             return offsets;
         }
-        LatLon origin = family.lines().getFirst().center();
+        CoordinatePoint origin = family.lines().getFirst().center();
         double radians = Math.toRadians(orientation);
-        double cosineLatitude = Math.cos(Math.toRadians(origin.getLatDgr()));
         for (LineGeometry line : family.lines()) {
-            for (LatLon point : line.points()) {
-                offsets.add(projectOffset(point, origin, radians, cosineLatitude));
+            for (SpatialPoint point : line.points()) {
+                offsets.add(projectOffset(point, origin, radians));
             }
         }
         offsets.sort(Comparator.naturalOrder());
         return offsets;
     }
 
-    private static double projectOffset(LatLon point, LatLon origin, double orientation, double cosineLatitude) {
-        double east = (point.getLonDgr() - origin.getLonDgr()) * METERS_PER_DEGREE * cosineLatitude;
-        double north = (point.getLatDgr() - origin.getLatDgr()) * METERS_PER_DEGREE;
+    private static double projectOffset(SpatialPoint point, CoordinatePoint origin, double orientation) {
+        double east = point.x() - origin.x();
+        double north = point.y() - origin.y();
         return east * Math.cos(orientation) - north * Math.sin(orientation);
     }
 
@@ -402,7 +455,20 @@ public class SurveyGeometryService {
         return primaryLineSpacing.median() * 2.0;
     }
 
-    private record LineGeometry(int id, List<LatLon> points, LatLon center, double orientation) {
+    private static double heading(SpatialPoint from, SpatialPoint to) {
+        return normalizeHeading(Math.toDegrees(Math.atan2(to.x() - from.x(), to.y() - from.y())));
+    }
+
+    private static double normalizeHeading(double heading) {
+        double normalized = heading % 360.0;
+        return normalized < 0.0 ? normalized + 360.0 : normalized;
+    }
+
+    private record SpatialPoint(double x, double y, @org.jspecify.annotations.Nullable LatLon mapLocation) {
+    }
+
+    private record LineGeometry(int id, List<SpatialPoint> points, CoordinatePoint center, double orientation,
+                                List<LatLon> mapPath) {
     }
 
     private record LineFamily(List<LineGeometry> lines, double orientation) {

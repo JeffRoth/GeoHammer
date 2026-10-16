@@ -6,8 +6,8 @@ import com.ugcs.geohammer.math.QuickSelect;
 import com.ugcs.geohammer.math.SphericalMercator;
 import com.ugcs.geohammer.model.ColumnSchema;
 import com.ugcs.geohammer.model.LatLon;
-import com.ugcs.geohammer.model.DataPoint;
 import com.ugcs.geohammer.model.Semantic;
+import com.ugcs.geohammer.model.WorkingCoordinates;
 import com.ugcs.geohammer.util.Check;
 import com.ugcs.geohammer.util.Nulls;
 import edu.mines.jtk.interp.SplinesGridder2;
@@ -39,12 +39,13 @@ public class GriddingService {
     public GriddingResult runGridding(Collection<SgyFile> files, String seriesName, GriddingParams params) {
         long filteringStart = System.nanoTime();
 
-        List<DataPoint> dataPoints = getDataPoints(files, seriesName);
+        int epsgCode = getWorkingEpsg(files);
+        List<SamplePoint> dataPoints = getDataPoints(files, seriesName, epsgCode);
         if (dataPoints.isEmpty()) {
             return null;
         }
 
-        Envelope envelope = Envelope.of(dataPoints);
+        Envelope envelope = Envelope.of(dataPoints, epsgCode);
         // add padding of blanking distance to envelope
         double padding = ((int) Math.ceil(params.blankingDistance() / params.cellSize()) + 1) * params.cellSize();
         envelope = envelope.expand(padding);
@@ -59,7 +60,7 @@ public class GriddingService {
         }
 
         Map<CellIndex, List<Double>> cellValues = new HashMap<>();
-        for (DataPoint point : dataPoints) {
+        for (SamplePoint point : dataPoints) {
             CellIndex cellIndex = envelope.cellIndex(point, gridWidth, gridHeight);
             cellValues.computeIfAbsent(cellIndex, (k -> new ArrayList<>()))
                     .add(point.value());
@@ -71,7 +72,7 @@ public class GriddingService {
             Arrays.fill(mask[i], true);
         }
 
-        float median = (float) QuickSelect.getMedian(dataPoints, DataPoint::value);
+        float median = (float) QuickSelect.getMedian(dataPoints, SamplePoint::value);
 
         for (Map.Entry<CellIndex, List<Double>> entry : cellValues.entrySet()) {
             CellIndex cellIndex = entry.getKey();
@@ -128,9 +129,10 @@ public class GriddingService {
         return new GriddingResult(
                 seriesName,
                 grid,
-                envelope.min(),
-                envelope.max(),
-                params
+                new LatLon(mapEnvelope(files).coordinates().minY(), mapEnvelope(files).coordinates().minX()),
+                new LatLon(mapEnvelope(files).coordinates().maxY(), mapEnvelope(files).coordinates().maxX()),
+                params,
+                envelope.coordinates()
         );
     }
 
@@ -151,15 +153,29 @@ public class GriddingService {
         log.info("Interpolation complete");
     }
 
-    private List<DataPoint> getDataPoints(Collection<SgyFile> files, String seriesName) {
-        List<DataPoint> points = new ArrayList<>();
+    private int getWorkingEpsg(Collection<SgyFile> files) {
+        int epsgCode = -1;
         for (SgyFile file : files) {
-            points.addAll(getDataPoints(file, seriesName));
+            ColumnSchema schema = GeoData.getSchema(file.getGeoData());
+            WorkingCoordinates working = schema != null ? schema.getWorkingCoordinates() : null;
+            int fileEpsg = working != null && working.epsgCode() != 4326 ? working.epsgCode() : 3857;
+            if (epsgCode != -1 && epsgCode != fileEpsg) {
+                throw new IllegalArgumentException("All gridded files must use the same active working CRS");
+            }
+            epsgCode = fileEpsg;
+        }
+        return epsgCode != -1 ? epsgCode : 3857;
+    }
+
+    private List<SamplePoint> getDataPoints(Collection<SgyFile> files, String seriesName, int epsgCode) {
+        List<SamplePoint> points = new ArrayList<>();
+        for (SgyFile file : files) {
+            points.addAll(getDataPoints(file, seriesName, epsgCode));
         }
         return points;
     }
 
-    private List<DataPoint> getDataPoints(SgyFile file, String seriesName) {
+    private List<SamplePoint> getDataPoints(SgyFile file, String seriesName, int epsgCode) {
         if (file == null) {
             return List.of();
         }
@@ -170,14 +186,17 @@ public class GriddingService {
             return List.of();
         }
 
+        int valueIndex = schema.getColumnIndex(seriesName);
+        WorkingCoordinates working = schema.getWorkingCoordinates();
         int latitudeIndex = schema.getColumnIndex(schema.getHeaderBySemantic(Semantic.LATITUDE.getName()));
         int longitudeIndex = schema.getColumnIndex(schema.getHeaderBySemantic(Semantic.LONGITUDE.getName()));
-        int valueIndex = schema.getColumnIndex(seriesName);
-        if (latitudeIndex == -1 || longitudeIndex == -1 || valueIndex == -1) {
+        int xIndex = working != null ? schema.getColumnIndex(working.xSeries()) : -1;
+        int yIndex = working != null ? schema.getColumnIndex(working.ySeries()) : -1;
+        if (latitudeIndex == -1 || longitudeIndex == -1 || valueIndex == -1 || working != null && (xIndex == -1 || yIndex == -1)) {
             return List.of();
         }
 
-        List<DataPoint> points = new ArrayList<>(values.size());
+        List<SamplePoint> points = new ArrayList<>(values.size());
         for (GeoData value : values) {
             Number latitude = value.getNumber(latitudeIndex);
             Number longitude = value.getNumber(longitudeIndex);
@@ -185,10 +204,20 @@ public class GriddingService {
             if (latitude == null || longitude == null || pointValue == null) {
                 continue;
             }
-            points.add(new DataPoint(
-                    latitude.doubleValue(),
-                    longitude.doubleValue(),
-                    pointValue.doubleValue()));
+            double x;
+            double y;
+            if (working != null && working.epsgCode() != 4326) {
+                Number workingX = value.getNumber(xIndex);
+                Number workingY = value.getNumber(yIndex);
+                if (workingX == null || workingY == null) continue;
+                x = workingX.doubleValue();
+                y = workingY.doubleValue();
+            } else {
+                var point = SphericalMercator.project(latitude.doubleValue(), longitude.doubleValue());
+                x = point.getX();
+                y = point.getY();
+            }
+            points.add(new SamplePoint(x, y, pointValue.doubleValue()));
         }
         return points;
     }
@@ -197,23 +226,30 @@ public class GriddingService {
         return QuickSelect.getMedian(values, Double::doubleValue);
     }
 
-    private record Envelope(LatLon min, LatLon max) {
+    private static Envelope mapEnvelope(Collection<SgyFile> files) {
+        List<LatLon> points = new ArrayList<>();
+        for (SgyFile file : files) {
+            for (GeoData value : Nulls.toEmpty(file.getGeoData())) {
+                LatLon point = value.getLatLon();
+                if (point != null) points.add(point);
+            }
+        }
+        return Envelope.ofMap(points);
+    }
+
+    private record Envelope(GridCoordinates coordinates) {
 
         public double width() {
-            return Math.max(
-                    new LatLon(min.getLatDgr(), min.getLonDgr()).getDistance(new LatLon(min.getLatDgr(), max.getLonDgr())),
-                    new LatLon(max.getLatDgr(), min.getLonDgr()).getDistance(new LatLon(max.getLatDgr(), max.getLonDgr())));
+            return coordinates.width();
         }
 
         public double height() {
-            return Math.max(
-                    new LatLon(min.getLatDgr(), min.getLonDgr()).getDistance(new LatLon(max.getLatDgr(), min.getLonDgr())),
-                    new LatLon(min.getLatDgr(), max.getLonDgr()).getDistance(new LatLon(max.getLatDgr(), max.getLonDgr())));
+            return coordinates.height();
         }
 
-        public CellIndex cellIndex(DataPoint point, int gridWidth, int gridHeight) {
-            int x = (int) (gridWidth * (point.longitude() - min.getLonDgr()) / (max.getLonDgr() - min.getLonDgr()));
-            int y = (int) (gridHeight * (point.latitude() - min.getLatDgr()) / (max.getLatDgr() - min.getLatDgr()));
+        public CellIndex cellIndex(SamplePoint point, int gridWidth, int gridHeight) {
+            int x = (int) (gridWidth * (point.x() - coordinates.minX()) / coordinates.width());
+            int y = (int) (gridHeight * (point.y() - coordinates.minY()) / coordinates.height());
             return new CellIndex(
                     Math.clamp(x, 0, gridWidth - 1),
                     Math.clamp(y, 0, gridHeight - 1));
@@ -222,42 +258,35 @@ public class GriddingService {
         public Envelope expand(double distance) {
             Check.condition(distance >= 0);
 
-            double latitudeOffset = Math.toDegrees(distance / SphericalMercator.R);
-            double minLatitude = Math.max(min.getLatDgr() - latitudeOffset, -90);
-            double maxLatitude = Math.min(max.getLatDgr() + latitudeOffset, 90);
-
-            // a degree of longitude is shortest on the edge farthest from the equator,
-            // offsetting by it keeps both edges at least the distance away
-            double cos = Math.cos(Math.toRadians(Math.max(Math.abs(minLatitude), Math.abs(maxLatitude))));
-            double longitudeOffset = cos > 0
-                    ? Math.toDegrees(distance / (SphericalMercator.R * cos))
-                    : 180;
-            double minLongitude = Math.max(min.getLonDgr() - longitudeOffset, -180);
-            double maxLongitude = Math.min(max.getLonDgr() + longitudeOffset, 180);
-
-            return new Envelope(
-                    new LatLon(minLatitude, minLongitude),
-                    new LatLon(maxLatitude, maxLongitude));
+            return new Envelope(coordinates.expand(distance));
         }
         
-        public static Envelope of(List<DataPoint> points) {
+        public static Envelope of(List<SamplePoint> points, int epsgCode) {
             Check.notEmpty(points);
 
-            double minLatitude = Double.POSITIVE_INFINITY;
-            double minLongitude = Double.POSITIVE_INFINITY;
-            double maxLatitude = Double.NEGATIVE_INFINITY;
-            double maxLongitude = Double.NEGATIVE_INFINITY;
-            for (DataPoint point : points) {
-                minLatitude = Math.min(minLatitude, point.latitude());
-                minLongitude = Math.min(minLongitude, point.longitude());
-                maxLatitude = Math.max(maxLatitude, point.latitude());
-                maxLongitude = Math.max(maxLongitude, point.longitude());
+            double minX = Double.POSITIVE_INFINITY;
+            double minY = Double.POSITIVE_INFINITY;
+            double maxX = Double.NEGATIVE_INFINITY;
+            double maxY = Double.NEGATIVE_INFINITY;
+            for (SamplePoint point : points) {
+                minX = Math.min(minX, point.x()); minY = Math.min(minY, point.y());
+                maxX = Math.max(maxX, point.x()); maxY = Math.max(maxY, point.y());
             }
-            return new Envelope(
-                    new LatLon(minLatitude, minLongitude),
-                    new LatLon(maxLatitude, maxLongitude));
+            return new Envelope(new GridCoordinates(minX, minY, maxX, maxY, epsgCode));
+        }
+
+        public static Envelope ofMap(List<LatLon> points) {
+            double minLat = Double.POSITIVE_INFINITY, minLon = Double.POSITIVE_INFINITY;
+            double maxLat = Double.NEGATIVE_INFINITY, maxLon = Double.NEGATIVE_INFINITY;
+            for (LatLon point : points) {
+                minLat = Math.min(minLat, point.getLatDgr()); minLon = Math.min(minLon, point.getLonDgr());
+                maxLat = Math.max(maxLat, point.getLatDgr()); maxLon = Math.max(maxLon, point.getLonDgr());
+            }
+            return new Envelope(new GridCoordinates(minLon, minLat, maxLon, maxLat, 4326));
         }
     }
 
     private record CellIndex(int x, int y) {}
+
+    private record SamplePoint(double x, double y, double value) {}
 }

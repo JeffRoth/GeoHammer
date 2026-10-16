@@ -17,7 +17,8 @@ public class NoiseExtractionService {
         Check.condition(input.length >= 2 && input[0].length >= 2, "The input grid is too small for directional filtering");
         double[] steps = cellSteps(source);
         float[][] noise = directionalHighPass(input, steps[0], steps[1], primaryHeading, 4 * lineSpacing);
-        return new GriddingResult(source.seriesName() + "_NOISE", noise, source.minLatLon(), source.maxLatLon(), source.params());
+        return new GriddingResult(source.seriesName() + "_NOISE", noise, source.minLatLon(), source.maxLatLon(),
+                source.params(), source.coordinates());
     }
 
     private static float[][] directionalHighPass(float[][] input, double cellWidth, double cellHeight, double heading,

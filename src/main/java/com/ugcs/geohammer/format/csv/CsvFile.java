@@ -74,6 +74,7 @@ public class CsvFile extends SgyFile {
 
         parser = ParserFactory.createParser(template);
         geoData = parser.parse(csvFile);
+        SpatialReferenceFile.load(csvFile, GeoData.getSchema(geoData));
 
         MissingValues.fillGeoDataPositions(geoData);
 
@@ -137,6 +138,7 @@ public class CsvFile extends SgyFile {
 
         Writer writer = WriterFactory.createWriter(getTemplate());
         writer.write(this, file);
+        SpatialReferenceFile.save(file, GeoData.getSchema(geoData));
     }
 
     @Override

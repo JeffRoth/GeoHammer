@@ -2,6 +2,7 @@ package com.ugcs.geohammer.service.magnetics;
 
 import com.ugcs.geohammer.format.GeoData;
 import com.ugcs.geohammer.model.LatLon;
+import com.ugcs.geohammer.service.coordinates.CoordinateReferenceService;
 import com.ugcs.geohammer.util.Check;
 import org.jspecify.annotations.Nullable;
 import org.springframework.stereotype.Service;
@@ -16,14 +17,21 @@ import java.util.Set;
 @Service
 public class ConventionalLevelingService {
 
+    private final CoordinateReferenceService coordinates;
+
+    public ConventionalLevelingService(CoordinateReferenceService coordinates) {
+        this.coordinates = coordinates;
+    }
+
     public ConventionalLevelingResult level(List<GeoData> data, ConventionalLevelingOptions options) {
         Check.notEmpty(data);
         Check.notNull(options);
-        Map<Integer, List<Sample>> lines = collectLines(data, options.inputSeries());
+        SpatialSurveyCoordinates spatial = SpatialSurveyCoordinates.of(data, coordinates);
+        Map<Integer, List<Sample>> lines = collectLines(data, options.inputSeries(), spatial);
         for (Integer lineId : options.tieLineIds()) {
             Check.condition(lines.containsKey(lineId), "Tie line " + lineId + " is not present in this survey");
         }
-        List<ConventionalCrossover> crossovers = findCrossovers(lines, options.tieLineIds());
+        List<ConventionalCrossover> crossovers = findCrossovers(lines, options.tieLineIds(), spatial);
         Check.condition(!crossovers.isEmpty(), "No survey/tie-line crossovers were found");
 
         Map<Integer, CorrectionFunction> tieFunctions = new LinkedHashMap<>();
@@ -80,17 +88,17 @@ public class ConventionalLevelingService {
                 statistics(crossovers, null, null), statistics(crossovers, tieFunctions, surveyFunctions));
     }
 
-    private static Map<Integer, List<Sample>> collectLines(List<GeoData> data, String series) {
+    private static Map<Integer, List<Sample>> collectLines(List<GeoData> data, String series, SpatialSurveyCoordinates spatial) {
         Map<Integer, List<Sample>> lines = new LinkedHashMap<>();
         for (int row = 0; row < data.size(); row++) {
             GeoData value = data.get(row);
-            LatLon location = value.getLatLon();
+            SpatialSurveyCoordinates.SpatialPoint location = spatial.point(value);
             Number field = value.getNumber(series);
             if (location == null || field == null || !Double.isFinite(field.doubleValue())) {
                 continue;
             }
             List<Sample> line = lines.computeIfAbsent(value.getLineOrDefault(0), ignored -> new ArrayList<>());
-            double distance = line.isEmpty() ? 0 : line.getLast().distance() + line.getLast().location().getDistance(location);
+            double distance = line.isEmpty() ? 0 : line.getLast().distance() + spatial.distance(line.getLast().location(), location);
             line.add(new Sample(row, location, field.doubleValue(), distance));
         }
         lines.values().removeIf(line -> line.size() < 2);
@@ -98,7 +106,8 @@ public class ConventionalLevelingService {
         return lines;
     }
 
-    private static List<ConventionalCrossover> findCrossovers(Map<Integer, List<Sample>> lines, Set<Integer> ties) {
+    private static List<ConventionalCrossover> findCrossovers(Map<Integer, List<Sample>> lines, Set<Integer> ties,
+                                                               SpatialSurveyCoordinates spatial) {
         List<ConventionalCrossover> result = new ArrayList<>();
         for (Map.Entry<Integer, List<Sample>> survey : lines.entrySet()) {
             if (ties.contains(survey.getKey())) {
@@ -109,7 +118,7 @@ public class ConventionalLevelingService {
                 for (int i = 1; i < survey.getValue().size(); i++) {
                     for (int j = 1; j < tie.size(); j++) {
                         ConventionalCrossover crossover = intersect(survey.getKey(), tieId, survey.getValue().get(i - 1),
-                                survey.getValue().get(i), tie.get(j - 1), tie.get(j));
+                                survey.getValue().get(i), tie.get(j - 1), tie.get(j), spatial);
                         if (crossover != null) {
                             result.add(crossover);
                         }
@@ -120,22 +129,24 @@ public class ConventionalLevelingService {
         return result;
     }
 
-    private static @Nullable ConventionalCrossover intersect(int surveyLine, int tieLine, Sample a, Sample b, Sample c, Sample d) {
-        double denominator = (b.location().getLonDgr() - a.location().getLonDgr()) * (d.location().getLatDgr() - c.location().getLatDgr())
-                - (b.location().getLatDgr() - a.location().getLatDgr()) * (d.location().getLonDgr() - c.location().getLonDgr());
+    private static @Nullable ConventionalCrossover intersect(int surveyLine, int tieLine, Sample a, Sample b, Sample c, Sample d,
+                                                              SpatialSurveyCoordinates spatial) {
+        double denominator = (b.location().x() - a.location().x()) * (d.location().y() - c.location().y())
+                - (b.location().y() - a.location().y()) * (d.location().x() - c.location().x());
         if (Math.abs(denominator) < 1e-12) {
             return null;
         }
-        double t = ((c.location().getLonDgr() - a.location().getLonDgr()) * (d.location().getLatDgr() - c.location().getLatDgr())
-                - (c.location().getLatDgr() - a.location().getLatDgr()) * (d.location().getLonDgr() - c.location().getLonDgr())) / denominator;
-        double u = ((c.location().getLonDgr() - a.location().getLonDgr()) * (b.location().getLatDgr() - a.location().getLatDgr())
-                - (c.location().getLatDgr() - a.location().getLatDgr()) * (b.location().getLonDgr() - a.location().getLonDgr())) / denominator;
+        double t = ((c.location().x() - a.location().x()) * (d.location().y() - c.location().y())
+                - (c.location().y() - a.location().y()) * (d.location().x() - c.location().x())) / denominator;
+        double u = ((c.location().x() - a.location().x()) * (b.location().y() - a.location().y())
+                - (c.location().y() - a.location().y()) * (b.location().x() - a.location().x())) / denominator;
         if (t < 0 || t > 1 || u < 0 || u > 1) {
             return null;
         }
-        return new ConventionalCrossover(surveyLine, tieLine,
-                a.location().getLatDgr() + t * (b.location().getLatDgr() - a.location().getLatDgr()),
-                a.location().getLonDgr() + t * (b.location().getLonDgr() - a.location().getLonDgr()),
+        double x = a.location().x() + t * (b.location().x() - a.location().x());
+        double y = a.location().y() + t * (b.location().y() - a.location().y());
+        LatLon location = spatial.geographic(x, y);
+        return new ConventionalCrossover(surveyLine, tieLine, location.getLatDgr(), location.getLonDgr(),
                 a.distance() + t * (b.distance() - a.distance()), c.distance() + u * (d.distance() - c.distance()),
                 a.field() + t * (b.field() - a.field()), c.field() + u * (d.field() - c.field()));
     }
@@ -355,7 +366,7 @@ public class ConventionalLevelingService {
         double valueAt(double distance);
     }
 
-    private record Sample(int row, LatLon location, double field, double distance) { }
+    private record Sample(int row, SpatialSurveyCoordinates.SpatialPoint location, double field, double distance) { }
 
     private record Point(double x, double y) { }
 }

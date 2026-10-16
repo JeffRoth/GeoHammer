@@ -1,7 +1,7 @@
 package com.ugcs.geohammer.service.magnetics;
 
 import com.ugcs.geohammer.format.GeoData;
-import com.ugcs.geohammer.model.LatLon;
+import com.ugcs.geohammer.service.coordinates.CoordinateReferenceService;
 import com.ugcs.geohammer.util.Check;
 import org.jspecify.annotations.Nullable;
 import org.springframework.stereotype.Service;
@@ -12,18 +12,25 @@ import java.util.List;
 @Service
 public class RegionalRemovalService {
 
+    private final CoordinateReferenceService coordinates;
+
+    public RegionalRemovalService(CoordinateReferenceService coordinates) {
+        this.coordinates = coordinates;
+    }
+
     public RegionalRemovalResult remove(List<GeoData> data, String series, int polynomialOrder) {
         Check.notEmpty(data);
         Check.notEmpty(series);
         Check.condition(polynomialOrder >= 0 && polynomialOrder <= 3,
                 "Polynomial order must be between 0 and 3");
 
-        List<Sample> samples = collectSamples(data, series);
+        SpatialSurveyCoordinates spatial = SpatialSurveyCoordinates.of(data, coordinates);
+        List<Sample> samples = collectSamples(data, series, spatial);
         int terms = termCount(polynomialOrder);
         Check.condition(samples.size() >= terms,
                 "Polynomial order %d requires at least %d samples with coordinates and values"
                         .formatted(polynomialOrder, terms));
-        normalizeCoordinates(samples);
+        normalizeCoordinates(samples, spatial.isGeographic());
 
         double[][] normal = new double[terms][terms];
         double[] rightHandSide = new double[terms];
@@ -54,34 +61,34 @@ public class RegionalRemovalService {
         return new RegionalRemovalResult(values, samples.size(), Math.sqrt(sumSquares / samples.size()));
     }
 
-    private static List<Sample> collectSamples(List<GeoData> data, String series) {
+    private static List<Sample> collectSamples(List<GeoData> data, String series, SpatialSurveyCoordinates spatial) {
         List<Sample> samples = new ArrayList<>();
         for (int index = 0; index < data.size(); index++) {
             GeoData value = data.get(index);
-            LatLon location = value.getLatLon();
+            SpatialSurveyCoordinates.SpatialPoint location = spatial.point(value);
             Number field = value.getNumber(series);
             if (location != null && field != null && Double.isFinite(field.doubleValue())) {
-                samples.add(new Sample(index, location.getLatDgr(), location.getLonDgr(), field.doubleValue()));
+                samples.add(new Sample(index, location.x(), location.y(), field.doubleValue()));
             }
         }
         Check.condition(!samples.isEmpty(), "Survey has no samples with coordinates and magnetic values");
         return samples;
     }
 
-    private static void normalizeCoordinates(List<Sample> samples) {
-        double latitudeSum = 0;
-        double longitudeSum = 0;
+    private static void normalizeCoordinates(List<Sample> samples, boolean geographic) {
+        double xSum = 0;
+        double ySum = 0;
         for (Sample sample : samples) {
-            latitudeSum += sample.latitude;
-            longitudeSum += sample.longitude;
+            xSum += sample.sourceX;
+            ySum += sample.sourceY;
         }
-        double latitudeCenter = latitudeSum / samples.size();
-        double longitudeCenter = longitudeSum / samples.size();
-        double longitudeScale = Math.cos(Math.toRadians(latitudeCenter));
+        double xCenter = xSum / samples.size();
+        double yCenter = ySum / samples.size();
+        double xScale = geographic ? Math.cos(Math.toRadians(yCenter)) : 1.0;
         double scale = 0;
         for (Sample sample : samples) {
-            sample.x = (sample.longitude - longitudeCenter) * longitudeScale;
-            sample.y = sample.latitude - latitudeCenter;
+            sample.x = (sample.sourceX - xCenter) * xScale;
+            sample.y = sample.sourceY - yCenter;
             scale = Math.max(scale, Math.max(Math.abs(sample.x), Math.abs(sample.y)));
         }
         Check.condition(scale > 1e-12, "Survey coordinates do not span an area");
@@ -162,9 +169,9 @@ public class RegionalRemovalService {
 
         private final int dataIndex;
 
-        private final double latitude;
+        private final double sourceX;
 
-        private final double longitude;
+        private final double sourceY;
 
         private final double field;
 
@@ -172,10 +179,10 @@ public class RegionalRemovalService {
 
         private double y;
 
-        private Sample(int dataIndex, double latitude, double longitude, double field) {
+        private Sample(int dataIndex, double sourceX, double sourceY, double field) {
             this.dataIndex = dataIndex;
-            this.latitude = latitude;
-            this.longitude = longitude;
+            this.sourceX = sourceX;
+            this.sourceY = sourceY;
             this.field = field;
         }
     }

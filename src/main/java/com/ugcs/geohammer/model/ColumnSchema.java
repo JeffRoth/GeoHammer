@@ -3,6 +3,7 @@ package com.ugcs.geohammer.model;
 import com.ugcs.geohammer.util.Check;
 import com.ugcs.geohammer.util.Strings;
 import org.jetbrains.annotations.NotNull;
+import org.jspecify.annotations.Nullable;
 
 import java.util.HashMap;
 import java.util.Iterator;
@@ -27,6 +28,10 @@ public class ColumnSchema implements Iterable<Column> {
     // lets column indices resolved earlier be validated cheaply
     private int version;
 
+    private @Nullable WorkingCoordinates workingCoordinates;
+
+    private @Nullable SpatialReference spatialReference;
+
     public static ColumnSchema copy(ColumnSchema schema) {
         if (schema == null) {
             return null;
@@ -35,6 +40,8 @@ public class ColumnSchema implements Iterable<Column> {
         schema.columns.forEach((header, column) -> {
             copy.columns.put(header, Column.copy(column));
         });
+        copy.workingCoordinates = schema.workingCoordinates;
+        copy.spatialReference = schema.spatialReference;
         return copy;
     }
 
@@ -128,17 +135,53 @@ public class ColumnSchema implements Iterable<Column> {
 
     public boolean isColumnDisplay(String header) {
         Column column = getColumn(header);
-        return column != null && column.isDisplay();
+        return column != null && isDisplayColumn(column);
+    }
+
+    public @Nullable WorkingCoordinates getWorkingCoordinates() {
+        if (spatialReference != null && spatialReference.activePair() != null) {
+            CoordinatePair pair = spatialReference.activePair();
+            return new WorkingCoordinates(pair.xSeries(), pair.ySeries(), pair.epsgCode());
+        }
+        return workingCoordinates;
+    }
+
+    public void setWorkingCoordinates(@Nullable WorkingCoordinates workingCoordinates) {
+        this.workingCoordinates = workingCoordinates;
+        if (workingCoordinates != null) {
+            CoordinatePair pair = new CoordinatePair(workingCoordinates.xSeries(), workingCoordinates.ySeries(),
+                    workingCoordinates.epsgCode());
+            spatialReference = spatialReference != null
+                    ? spatialReference.withActivePair(pair)
+                    : new SpatialReference(java.util.List.of(pair), pair, null);
+        }
+    }
+
+    public @Nullable SpatialReference getSpatialReference() {
+        return spatialReference;
+    }
+
+    public void setSpatialReference(@Nullable SpatialReference spatialReference) {
+        this.spatialReference = spatialReference;
+        CoordinatePair pair = spatialReference != null ? spatialReference.activePair() : null;
+        workingCoordinates = pair != null ? new WorkingCoordinates(pair.xSeries(), pair.ySeries(), pair.epsgCode()) : null;
     }
 
     public Set<String> getDisplayHeaders() {
         Set<String> displayHeaders = new LinkedHashSet<>(numDisplayColumns());
         for (Column column : columns.values()) {
-            if (!column.isDisplay()) {
+            if (!isDisplayColumn(column)) {
                 continue;
             }
             displayHeaders.add(column.getHeader());
         }
         return displayHeaders;
+    }
+
+    private static boolean isDisplayColumn(Column column) {
+        String semantic = column.getSemantic();
+        return column.isDisplay()
+                || Semantic.LATITUDE.getName().equals(semantic)
+                || Semantic.LONGITUDE.getName().equals(semantic);
     }
 }

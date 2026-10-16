@@ -16,7 +16,7 @@ class SurveyGeometryServiceTest {
 
     @Test
     void analyze_summarizesLineGeometryAndRecommendations() {
-        SurveyGeometryReport report = new SurveyGeometryService().analyze(List.of(
+        SurveyGeometryReport report = service().analyze(List.of(
                 point(1, 44.0, -73.0), point(1, 44.01, -73.0), point(1, 44.02, -73.0),
                 point(2, 44.0, -72.997), point(2, 44.01, -72.997), point(2, 44.02, -72.997),
                 point(3, 44.0, -73.002), point(3, 44.0, -72.99), point(3, 44.0, -72.978),
@@ -46,7 +46,7 @@ class SurveyGeometryServiceTest {
         addLine(data, 10, 44.046, -73.002, 44.046, -72.978);
         addLine(data, 11, 44.0675, -73.002, 44.0675, -72.978);
 
-        SurveyGeometryReport report = new SurveyGeometryService().analyze(data);
+        SurveyGeometryReport report = service().analyze(data);
 
         assertEquals(2_500.0, report.tieLinePeakSpacing(), 250.0);
         assertEquals(4, report.tieLinePeakCount());
@@ -56,6 +56,10 @@ class SurveyGeometryServiceTest {
                                 double latitudeEnd, double longitudeEnd) {
         data.add(point(line, latitudeStart, longitudeStart));
         data.add(point(line, latitudeEnd, longitudeEnd));
+    }
+
+    private static SurveyGeometryService service() {
+        return new SurveyGeometryService();
     }
 
     private static GeoData point(int line, double latitude, double longitude) {
