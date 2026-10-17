@@ -160,6 +160,16 @@ public class TraceCutter implements Layer, InitializingBean {
 	}
 
 	@Override
+	public boolean mouseRelease(Point2D point) {
+		if (!polygonSelector.hasSelection()) {
+			return false;
+		}
+		polygonSelector.releaseSelection();
+		getListener().repaint();
+		return true;
+	}
+
+	@Override
 	public boolean mouseRightClick(Point2D point) {
 		if (!buttonCutMode.isSelected()) {
 			return false;

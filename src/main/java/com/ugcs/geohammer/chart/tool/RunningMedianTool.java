@@ -6,13 +6,16 @@ import com.ugcs.geohammer.format.SgyFile;
 import com.ugcs.geohammer.format.csv.CsvFile;
 import com.ugcs.geohammer.model.Model;
 import com.ugcs.geohammer.model.event.FileSelectedEvent;
+import com.ugcs.geohammer.model.event.SeriesUpdatedEvent;
 import com.ugcs.geohammer.util.Strings;
 import com.ugcs.geohammer.util.Templates;
 import com.ugcs.geohammer.view.control.InputWithTopLabel;
+import com.ugcs.geohammer.view.control.NodeWithTopLabel;
 import javafx.application.Platform;
 import javafx.beans.value.ObservableValue;
 import javafx.event.ActionEvent;
 import javafx.scene.control.TextField;
+import javafx.scene.control.ComboBox;
 import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Component;
 
@@ -27,6 +30,10 @@ public class RunningMedianTool extends FilterToolView {
 
     private final TextField windowInput;
 
+    private final ComboBox<String> inputSeriesSelector;
+
+    private final TextField outputSeriesInput;
+
     public RunningMedianTool(Model model, Settings settings, ExecutorService executor) {
         super(executor);
 
@@ -36,16 +43,41 @@ public class RunningMedianTool extends FilterToolView {
         InputWithTopLabel windowWithLabel = new InputWithTopLabel("Window length (measurements)");
         windowInput = windowWithLabel.getInput();
         windowInput.textProperty().addListener(this::onShiftChange);
+        InputWithTopLabel outputWithLabel = new InputWithTopLabel("Filtered output series");
+        outputSeriesInput = outputWithLabel.getInput();
+        outputSeriesInput.textProperty().addListener((observable, oldValue, newValue) -> validateInput());
+        inputSeriesSelector = new ComboBox<>();
+        inputSeriesSelector.setMaxWidth(Double.MAX_VALUE);
+        inputSeriesSelector.setOnAction(event -> {
+            if (inputSeriesSelector.getValue() != null) {
+                outputSeriesInput.setText(inputSeriesSelector.getValue() + "_RM");
+            }
+            validateInput();
+        });
 
-        inputContainer.getChildren().setAll(windowWithLabel);
+        inputContainer.getChildren().setAll(
+                new NodeWithTopLabel<>("Input series", inputSeriesSelector),
+                windowWithLabel,
+                outputWithLabel
+        );
 
         showApply(true);
-        showApplyToAll(true);
+        showApplyToAll(false);
     }
 
     @Override
     public boolean isVisibleFor(SgyFile file) {
         return file instanceof CsvFile;
+    }
+
+    @Override
+    public void updateView() {
+        String selected = model.getChart(selectedFile) instanceof SensorLineChart chart ? chart.getSelectedSeriesName() : null;
+        MagneticSeriesSelector.update(inputSeriesSelector, selectedFile, selected);
+        if (selected != null && outputSeriesInput.getText().isBlank()) {
+            outputSeriesInput.setText(selected + "_RM");
+        }
+        validateInput();
     }
 
     private void onShiftChange(ObservableValue<? extends String> observable, String oldValue, String newValue) {
@@ -63,7 +95,8 @@ public class RunningMedianTool extends FilterToolView {
 
     public void validateInput() {
         Integer window = (Integer) windowInput.getUserData();
-        boolean disable = window == null || window <= 0;
+        boolean disable = window == null || window <= 0 || inputSeriesSelector.getValue() == null
+                || outputSeriesInput.getText().isBlank() || outputSeriesInput.getText().trim().equals(inputSeriesSelector.getValue());
         disableActions(disable);
     }
 
@@ -91,25 +124,11 @@ public class RunningMedianTool extends FilterToolView {
             return;
         }
         if (model.getChart(selectedFile) instanceof SensorLineChart sensorChart) {
+            String inputSeries = inputSeriesSelector.getValue();
+            String outputSeries = outputSeriesInput.getText().trim();
+            if (inputSeries == null) return;
             submitAction(() -> {
-                sensorChart.applyRunningMedian(sensorChart.getSelectedSeriesName(), window);
-                return null;
-            });
-        }
-    }
-
-    @Override
-    protected void onApplyToAll(ActionEvent event) {
-        Integer window = (Integer) windowInput.getUserData();
-        if (window == null) {
-            return;
-        }
-        if (model.getChart(selectedFile) instanceof SensorLineChart sensorChart) {
-            String seriesName = sensorChart.getSelectedSeriesName();
-            submitAction(() -> {
-                model.getSensorCharts().stream()
-                        .filter(c -> Templates.equals(c.getFile(), selectedFile))
-                        .forEach(c -> c.applyRunningMedian(seriesName, window));
+                sensorChart.createRunningMedianSeries(inputSeries, outputSeries, window);
                 return null;
             });
         }
@@ -118,5 +137,15 @@ public class RunningMedianTool extends FilterToolView {
     @EventListener
     private void onFileSelected(FileSelectedEvent event) {
         Platform.runLater(() -> selectFile(event.getFile()));
+    }
+
+    @EventListener
+    private void onSeriesUpdated(SeriesUpdatedEvent event) {
+        if (event.getFile().equals(selectedFile)) {
+            Platform.runLater(() -> {
+                MagneticSeriesSelector.update(inputSeriesSelector, selectedFile, event.getSeriesName());
+                validateInput();
+            });
+        }
     }
 }

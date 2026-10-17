@@ -45,7 +45,7 @@ public class MagneticProcessingWorkflow {
         Check.notNull(options);
         record(file, MagneticProcessingStepType.HEADING_CORRECTION,
                 options.inputSeries(), options.outputSeries(),
-                Map.of("method", "crossover-least-squares", "headingBins", Integer.toString(options.headingBins())));
+                Map.of("method", options.method().name(), "headingBins", Integer.toString(options.headingBins())));
     }
 
     public void recordLineLeveling(SgyFile file, LineLevelingOptions options) {

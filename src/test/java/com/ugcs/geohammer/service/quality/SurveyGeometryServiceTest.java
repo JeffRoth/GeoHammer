@@ -52,10 +52,70 @@ class SurveyGeometryServiceTest {
         assertEquals(4, report.tieLinePeakCount());
     }
 
+    @Test
+    void analyze_usesOneOffsetForSeparatedFragmentsOfTheSameLine() {
+        List<GeoData> data = new ArrayList<>();
+        addLine(data, 1, 44.000, -73.00000, 44.010, -73.00000);
+        addLine(data, 2, 44.000, -72.99999, 44.010, -72.99999);
+        addLine(data, 3, 44.000, -72.99998, 44.010, -72.99998);
+        addLine(data, 1, 44.020, -72.999999, 44.030, -72.999999);
+        addLine(data, 2, 44.020, -72.99999, 44.030, -72.99999);
+        addLine(data, 3, 44.020, -72.99998, 44.030, -72.99998);
+
+        SurveyGeometryReport report = service().analyze(data);
+
+        assertEquals(2, report.primaryLineSpacing().count());
+        assertEquals(0.8, report.primaryLineSpacing().median(), 0.2);
+    }
+
+    @Test
+    void analyze_refinesPrimaryHeadingBeforeCalculatingFragmentSpacing() {
+        List<GeoData> data = new ArrayList<>();
+        for (int line = 0; line < 5; line++) {
+            double longitude = -73.0 + line * 0.0000125;
+            addLineWithSamples(data, line + 1, 44.000, longitude, 44.020, longitude, 20);
+        }
+        for (int line = 0; line < 20; line++) {
+            double longitude = -72.998 - line * 0.000001;
+            addLine(data, line + 10, 44.000, longitude, 44.002, longitude + 0.000005);
+        }
+
+        SurveyGeometryReport report = service().analyze(data);
+
+        assertTrue(Math.min(report.primaryLineOrientation(), 180.0 - report.primaryLineOrientation()) < 0.5);
+        assertEquals(1.0, report.primaryLineSpacing().median(), 0.3);
+    }
+
+    @Test
+    void analyze_ignoresNearSampleScaleOffsetsWhenPhysicalSpacingIsWellRepresented() {
+        List<GeoData> data = new ArrayList<>();
+        for (int line = 0; line < 8; line++) {
+            double longitude = -73.0 + line * 0.0000125;
+            addLineWithSamples(data, line + 1, 44.000, longitude, 44.000005, longitude, 12);
+        }
+        for (int fragment = 0; fragment < 20; fragment++) {
+            double longitude = -73.0003 + fragment * 0.0000006;
+            addLineWithSamples(data, fragment + 20, 44.001, longitude, 44.001005, longitude, 12);
+        }
+
+        SurveyGeometryReport report = service().analyze(data);
+
+        assertEquals(1.0, report.primaryLineSpacing().median(), 0.3);
+    }
+
     private static void addLine(List<GeoData> data, int line, double latitudeStart, double longitudeStart,
                                 double latitudeEnd, double longitudeEnd) {
         data.add(point(line, latitudeStart, longitudeStart));
         data.add(point(line, latitudeEnd, longitudeEnd));
+    }
+
+    private static void addLineWithSamples(List<GeoData> data, int line, double latitudeStart, double longitudeStart,
+                                           double latitudeEnd, double longitudeEnd, int samples) {
+        for (int sample = 0; sample < samples; sample++) {
+            double fraction = (double) sample / (samples - 1);
+            data.add(point(line, latitudeStart + (latitudeEnd - latitudeStart) * fraction,
+                    longitudeStart + (longitudeEnd - longitudeStart) * fraction));
+        }
     }
 
     private static SurveyGeometryService service() {

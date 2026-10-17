@@ -39,6 +39,9 @@ public class FeedbackService {
     @Value("${jira.collectorId}")
     private String jiraCollectorId;
 
+    @Value("${feedback.enabled:false}")
+    private boolean feedbackEnabled;
+
     private final JiraCollector jiraCollector;
 
     private final BuildInfo buildInfo;
@@ -85,6 +88,10 @@ public class FeedbackService {
     }
 
     public void submitFeedback(Feedback feedback, List<Attachment> attachments) {
+        if (!feedbackEnabled) {
+            status.showMessage("Feedback submission is disabled in this build", "Feedback");
+            return;
+        }
         var future = executor.submit(() -> {
             try {
                 String attachmentId = uploadAttachments(attachments);

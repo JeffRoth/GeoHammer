@@ -13,6 +13,7 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class HeadingCorrectionServiceTest {
 
@@ -40,7 +41,10 @@ class HeadingCorrectionServiceTest {
                 sample(2, 1, 0, 110), sample(2, 1, 1, 110)
         );
 
-        assertThrows(IllegalArgumentException.class, () -> service.correct(data, "TMI", 8));
+        IllegalArgumentException exception = assertThrows(IllegalArgumentException.class,
+                () -> service.correct(data, "TMI", 8));
+
+        assertTrue(exception.getMessage().contains("parallel lines"));
     }
 
     @Test
@@ -54,6 +58,23 @@ class HeadingCorrectionServiceTest {
 
         assertEquals(List.of(100.0, 100.0, 100.0, 100.0), result.values());
         assertEquals(1, result.crossovers().size());
+    }
+
+    @Test
+    void correctReciprocalDirections_balancesMedianOffsetsOfParallelLines() {
+        List<GeoData> data = List.of(
+                projectedSample(1, 500000, 4900000, 100), projectedSample(1, 500100, 4900000, 100),
+                projectedSample(2, 500000, 4900100, 102), projectedSample(2, 500100, 4900100, 102),
+                projectedSample(3, 500100, 4900200, 110), projectedSample(3, 500000, 4900200, 110),
+                projectedSample(4, 500100, 4900300, 108), projectedSample(4, 500000, 4900300, 108)
+        );
+
+        ReciprocalHeadingCorrectionResult result = service.correctReciprocalDirections(data, "TMI");
+
+        assertEquals(-4.0, result.directionOffset());
+        assertEquals(2, result.forwardLineCount());
+        assertEquals(2, result.reverseLineCount());
+        assertEquals(List.of(104.0, 104.0, 106.0, 106.0, 106.0, 106.0, 104.0, 104.0), result.values());
     }
 
     private static GeoData sample(int line, double latitude, double longitude, double field) {

@@ -102,6 +102,10 @@ class PolygonSelector {
 		selectedIndex = null;
 	}
 
+	void releaseSelection() {
+		clearSelection();
+	}
+
 	void moveSelection(Point2D to) {
 		if (selectedIndex != null) {
 			LatLon latLon = mapField.screenTolatLon(to);
