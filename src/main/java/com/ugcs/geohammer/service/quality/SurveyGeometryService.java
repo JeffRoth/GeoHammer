@@ -10,7 +10,9 @@ import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 @Service
 public class SurveyGeometryService {
@@ -25,6 +27,10 @@ public class SurveyGeometryService {
 
     private static final double TIE_ORIENTATION_SEARCH_STEP = 0.5;
 
+    private static final double PRIMARY_ORIENTATION_SEARCH_RANGE = 10.0;
+
+    private static final double PRIMARY_ORIENTATION_SEARCH_STEP = 0.1;
+
     public SurveyGeometryReport analyze(List<GeoData> data) {
         List<LineGeometry> lines = collectLines(data, activeCoordinates(data));
         List<Double> sampleSpacing = new ArrayList<>();
@@ -33,10 +39,11 @@ public class SurveyGeometryService {
             collectSegments(line.points(), sampleSpacing, headings);
         }
 
-        LineFamilies families = splitLineFamilies(lines);
-        List<Double> primaryOffsets = collectLineOffsets(families.primary());
-        List<Double> primaryLineSpacing = collectAdjacentSpacing(primaryOffsets);
+        LineFamilies families = refinePrimaryOrientation(splitLineFamilies(lines));
         SurveyGeometryReport.Distribution sampleSummary = summarize(sampleSpacing);
+        List<Double> primaryOffsets = collectLineOffsets(families.primary(), sampleSummary.median());
+        List<Double> primaryLineSpacing = selectPhysicalLineSpacing(
+                collectAdjacentSpacing(primaryOffsets), sampleSummary.median());
         SurveyGeometryReport.Distribution primarySummary = summarize(primaryLineSpacing);
         TieLinePeaks tiePeaks = findTieLinePeaks(families.tieLines(), primarySummary.median(),
                 families.primary().orientation());
@@ -209,6 +216,48 @@ public class SurveyGeometryService {
         return new LineFamilies(new LineFamily(primary, meanOrientation(primary)), new LineFamily(ties, meanOrientation(ties)));
     }
 
+    private static LineFamilies refinePrimaryOrientation(LineFamilies families) {
+        LineFamily primary = families.primary();
+        if (primary.lines().isEmpty() || !Double.isFinite(primary.orientation())) {
+            return families;
+        }
+        double bestOrientation = primary.orientation();
+        double bestError = transverseError(primary.lines(), bestOrientation);
+        for (double offset = -PRIMARY_ORIENTATION_SEARCH_RANGE; offset <= PRIMARY_ORIENTATION_SEARCH_RANGE;
+             offset += PRIMARY_ORIENTATION_SEARCH_STEP) {
+            double candidate = normalizeOrientation(primary.orientation() + offset);
+            double error = transverseError(primary.lines(), candidate);
+            if (error < bestError) {
+                bestError = error;
+                bestOrientation = candidate;
+            }
+        }
+        return new LineFamilies(new LineFamily(primary.lines(), bestOrientation), families.tieLines());
+    }
+
+    private static double transverseError(List<LineGeometry> lines, double orientation) {
+        double radians = Math.toRadians(orientation);
+        double error = 0.0;
+        int count = 0;
+        for (LineGeometry line : lines) {
+            if (line.points().size() < 2) {
+                continue;
+            }
+            CoordinatePoint origin = line.points().getFirst().coordinate();
+            double mean = 0.0;
+            for (SpatialPoint point : line.points()) {
+                mean += projectOffset(point, origin, radians);
+            }
+            mean /= line.points().size();
+            for (SpatialPoint point : line.points()) {
+                double difference = projectOffset(point, origin, radians) - mean;
+                error += difference * difference;
+                count++;
+            }
+        }
+        return count == 0 ? Double.POSITIVE_INFINITY : error / count;
+    }
+
     private static double orientationDifference(double first, double second) {
         double difference = Math.abs(first - second);
         return Math.min(difference, 180.0 - difference);
@@ -229,22 +278,70 @@ public class SurveyGeometryService {
         return orientation < 0.0 ? orientation + 180.0 : orientation;
     }
 
-    private static List<Double> collectLineOffsets(LineFamily family) {
+    private static List<Double> collectLineOffsets(LineFamily family, double sampleSpacing) {
         List<Double> offsets = new ArrayList<>();
         if (family.lines().size() < 2 || !Double.isFinite(family.orientation())) {
             return offsets;
         }
         CoordinatePoint origin = family.lines().getFirst().center();
         double orientation = Math.toRadians(family.orientation());
+        Map<Integer, List<Double>> offsetsByLine = new LinkedHashMap<>();
         for (LineGeometry line : family.lines()) {
-            List<Double> lineOffsets = new ArrayList<>(line.points().size());
+            List<Double> lineOffsets = offsetsByLine.computeIfAbsent(line.id(), ignored -> new ArrayList<>());
             for (SpatialPoint point : line.points()) {
                 lineOffsets.add(projectOffset(point, origin, orientation));
             }
+        }
+        for (List<Double> lineOffsets : offsetsByLine.values()) {
             offsets.add(median(lineOffsets));
         }
         offsets.sort(Comparator.naturalOrder());
-        return offsets;
+        return collapseFragmentOffsets(offsets, sampleSpacing);
+    }
+
+    private static List<Double> collapseFragmentOffsets(List<Double> offsets, double sampleSpacing) {
+        if (offsets.size() < 3 || !Double.isFinite(sampleSpacing) || sampleSpacing <= 0.0) {
+            return offsets;
+        }
+        List<Double> gaps = collectAdjacentSpacing(offsets);
+        if (gaps.size() < 2) {
+            return offsets;
+        }
+        gaps.sort(Comparator.naturalOrder());
+        double lower = Double.NaN;
+        double upper = Double.NaN;
+        for (int i = 0; i < gaps.size() - 1; i++) {
+            if (gaps.get(i) <= 0.0) {
+                continue;
+            }
+            double ratio = gaps.get(i + 1) / gaps.get(i);
+            if (ratio >= 2.0) {
+                lower = gaps.get(i);
+                upper = gaps.get(i + 1);
+                break;
+            }
+        }
+        if (!Double.isFinite(lower)) {
+            return offsets;
+        }
+        double threshold = Math.min((lower + upper) / 2.0, sampleSpacing * 5.0);
+        if (!Double.isFinite(threshold) || threshold <= lower) {
+            return offsets;
+        }
+
+        List<Double> collapsed = new ArrayList<>();
+        List<Double> cluster = new ArrayList<>();
+        cluster.add(offsets.getFirst());
+        for (int i = 1; i < offsets.size(); i++) {
+            double offset = offsets.get(i);
+            if (offset - offsets.get(i - 1) > threshold) {
+                collapsed.add(median(cluster));
+                cluster.clear();
+            }
+            cluster.add(offset);
+        }
+        collapsed.add(median(cluster));
+        return collapsed;
     }
 
     private static List<Double> collectAdjacentSpacing(List<Double> offsets) {
@@ -256,6 +353,21 @@ public class SurveyGeometryService {
             }
         }
         return spacing;
+    }
+
+    private static List<Double> selectPhysicalLineSpacing(List<Double> spacing, double sampleSpacing) {
+        if (spacing.size() < 3 || !Double.isFinite(sampleSpacing) || sampleSpacing <= 0.0) {
+            return spacing;
+        }
+        double minimumPhysicalSpacing = sampleSpacing * 5.0;
+        List<Double> physicalSpacing = new ArrayList<>();
+        for (double distance : spacing) {
+            if (distance >= minimumPhysicalSpacing) {
+                physicalSpacing.add(distance);
+            }
+        }
+        int minimumCount = Math.max(3, (int) Math.ceil(spacing.size() * 0.1));
+        return physicalSpacing.size() >= minimumCount ? physicalSpacing : spacing;
     }
 
     private static TieLinePeaks findTieLinePeaks(LineFamily tieLines, double primaryLineSpacing,
@@ -465,6 +577,10 @@ public class SurveyGeometryService {
     }
 
     private record SpatialPoint(double x, double y, @org.jspecify.annotations.Nullable LatLon mapLocation) {
+
+        private CoordinatePoint coordinate() {
+            return new CoordinatePoint(x, y);
+        }
     }
 
     private record LineGeometry(int id, List<SpatialPoint> points, CoordinatePoint center, double orientation,

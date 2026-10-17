@@ -1152,6 +1152,22 @@ public class SensorLineChart extends Chart {
         });
     }
 
+    public void applyFilterToSeries(SequenceFilter filter, String inputSeries, String outputSeries) {
+        Check.notNull(filter);
+        Check.notEmpty(inputSeries);
+        Check.notEmpty(outputSeries);
+        Check.condition(!inputSeries.equals(outputSeries), "Output series name must differ from the input series");
+
+        LineChartWithMarkers chart = getChart(inputSeries);
+        Check.condition(chart != null, "Cannot apply filter to %s".formatted(inputSeries));
+        List<@Nullable Number> filtered = new ArrayList<>(chart.plot.data.size());
+        for (IndexRange range : file.getLineRanges().values()) {
+            List<@Nullable Number> rangeValues = chart.plot.data.subList(range.from(), range.to());
+            filtered.addAll(filter.apply(rangeValues));
+        }
+        createDerivedSeries(outputSeries, inputSeries, filtered);
+    }
+
     private void createFileColumn(String header, @Nullable String protoHeader) {
         List<GeoData> values = file.getGeoData();
         Column column = GeoData.addColumn(values, header);
@@ -1240,9 +1256,17 @@ public class SensorLineChart extends Chart {
         applyFilter(filter, seriesName, "_LPF");
     }
 
+    public void createLowPassSeries(String inputSeries, String outputSeries, int order) {
+        applyFilterToSeries(new LowPassFilter(order), inputSeries, outputSeries);
+    }
+
     public void applyRunningMedian(String seriesName, int window) {
         MedianCorrectionFilter filter = new MedianCorrectionFilter(window);
         applyFilter(filter, seriesName, "_RM");
+    }
+
+    public void createRunningMedianSeries(String inputSeries, String outputSeries, int window) {
+        applyFilterToSeries(new MedianCorrectionFilter(window), inputSeries, outputSeries);
     }
 
     // chart

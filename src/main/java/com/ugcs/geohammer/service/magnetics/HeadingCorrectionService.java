@@ -20,6 +20,8 @@ public class HeadingCorrectionService {
 
     private static final double CELL_SIZE_METERS = 100;
 
+    private static final double RECIPROCAL_ALIGNMENT_COSINE = Math.cos(Math.toRadians(30));
+
     private final CoordinateReferenceService coordinates;
 
     public HeadingCorrectionService(CoordinateReferenceService coordinates) {
@@ -34,7 +36,8 @@ public class HeadingCorrectionService {
         SpatialSurveyCoordinates spatial = SpatialSurveyCoordinates.of(data, coordinates);
         Map<Integer, List<Sample>> lines = collectLines(data, series, spatial);
         List<HeadingCrossover> crossovers = findCrossovers(lines, headingBins);
-        Check.condition(!crossovers.isEmpty(), "No line crossovers with different headings were found");
+        Check.condition(!crossovers.isEmpty(), "Heading correction requires intersecting survey lines with different "
+                + "headings; it cannot be estimated from parallel lines alone");
 
         Map<Integer, Double> corrections = solveCorrections(crossovers);
         double[] correctionByIndex = new double[data.size()];
@@ -56,6 +59,96 @@ public class HeadingCorrectionService {
                     : field.doubleValue() - correctionByIndex[index]);
         }
         return new HeadingCorrectionResult(corrected, crossovers, corrections, rmsError(crossovers, corrections));
+    }
+
+    public ReciprocalHeadingCorrectionResult correctReciprocalDirections(List<GeoData> data, String series) {
+        Check.notEmpty(data);
+        Check.notEmpty(series);
+
+        SpatialSurveyCoordinates spatial = SpatialSurveyCoordinates.of(data, coordinates);
+        Map<Integer, List<Sample>> lines = collectLines(data, series, spatial);
+        List<LineDirection> directions = lineDirections(lines);
+        Check.condition(directions.size() > 1, "Reciprocal-direction correction requires at least two survey lines");
+        LineDirection reference = dominantDirection(directions);
+
+        Map<Integer, Boolean> forwardByLine = new HashMap<>();
+        List<Double> forwardMedians = new ArrayList<>();
+        List<Double> reverseMedians = new ArrayList<>();
+        for (LineDirection direction : directions) {
+            double alignment = reference.x * direction.x + reference.y * direction.y;
+            if (Math.abs(alignment) < RECIPROCAL_ALIGNMENT_COSINE) {
+                continue;
+            }
+            boolean forward = alignment >= 0;
+            forwardByLine.put(direction.line, forward);
+            if (forward) {
+                forwardMedians.add(medianField(direction.samples));
+            } else {
+                reverseMedians.add(medianField(direction.samples));
+            }
+        }
+        Check.condition(!forwardMedians.isEmpty() && !reverseMedians.isEmpty(),
+                "Reciprocal-direction correction requires parallel lines acquired in both directions");
+
+        double offset = 0.5 * (median(forwardMedians) - median(reverseMedians));
+        List<@Nullable Number> corrected = new ArrayList<>(data.size());
+        for (GeoData value : data) {
+            Number field = value.getNumber(series);
+            Boolean forward = forwardByLine.get(value.getLineOrDefault(0));
+            corrected.add(field == null || !Double.isFinite(field.doubleValue()) || forward == null
+                    ? field
+                    : field.doubleValue() + (forward ? -offset : offset));
+        }
+        return new ReciprocalHeadingCorrectionResult(corrected, offset, forwardMedians.size(), reverseMedians.size());
+    }
+
+    private static List<LineDirection> lineDirections(Map<Integer, List<Sample>> lines) {
+        List<LineDirection> directions = new ArrayList<>();
+        for (Map.Entry<Integer, List<Sample>> entry : lines.entrySet()) {
+            List<Sample> samples = entry.getValue();
+            Sample first = samples.getFirst();
+            Sample last = samples.getLast();
+            double dx = last.x - first.x;
+            double dy = last.y - first.y;
+            double length = Math.hypot(dx, dy);
+            if (length > 0) {
+                directions.add(new LineDirection(entry.getKey(), dx / length, dy / length, samples));
+            }
+        }
+        return directions;
+    }
+
+    private static LineDirection dominantDirection(List<LineDirection> directions) {
+        LineDirection dominant = directions.getFirst();
+        int highestCount = -1;
+        for (LineDirection candidate : directions) {
+            int count = 0;
+            for (LineDirection direction : directions) {
+                double alignment = candidate.x * direction.x + candidate.y * direction.y;
+                if (Math.abs(alignment) >= RECIPROCAL_ALIGNMENT_COSINE) {
+                    count++;
+                }
+            }
+            if (count > highestCount) {
+                dominant = candidate;
+                highestCount = count;
+            }
+        }
+        return dominant;
+    }
+
+    private static double medianField(List<Sample> samples) {
+        List<Double> values = new ArrayList<>(samples.size());
+        for (Sample sample : samples) {
+            values.add(sample.field);
+        }
+        return median(values);
+    }
+
+    private static double median(List<Double> values) {
+        values.sort(Double::compareTo);
+        int middle = values.size() / 2;
+        return values.size() % 2 == 0 ? 0.5 * (values.get(middle - 1) + values.get(middle)) : values.get(middle);
     }
 
     private static Map<Integer, List<Sample>> collectLines(List<GeoData> data, String series, SpatialSurveyCoordinates spatial) {
@@ -275,5 +368,8 @@ public class HeadingCorrectionService {
     }
 
     private record Intersection(HeadingCrossover crossover, double x, double y) {
+    }
+
+    private record LineDirection(int line, double x, double y, List<Sample> samples) {
     }
 }

@@ -52,8 +52,15 @@ public class RecipeReplayService {
                 chart.createDerivedSeries(output, input, igrfRemovalService.remove(chart.getFile().getGeoData(), input, fallback));
             }
             case HEADING_CORRECTION -> {
-                int bins = integerSetting(step, "headingBins");
-                chart.createDerivedSeries(output, input, headingCorrectionService.correct(chart.getFile().getGeoData(), input, bins).values());
+                String method = step.settings().getOrDefault("method", "CROSSOVER_LEAST_SQUARES");
+                if (method.equals("RECIPROCAL_DIRECTION_MEDIAN")) {
+                    chart.createDerivedSeries(output, input,
+                            headingCorrectionService.correctReciprocalDirections(chart.getFile().getGeoData(), input).values());
+                } else {
+                    int bins = integerSetting(step, "headingBins");
+                    chart.createDerivedSeries(output, input,
+                            headingCorrectionService.correct(chart.getFile().getGeoData(), input, bins).values());
+                }
             }
             case LINE_LEVELING -> replayLineLeveling(chart, step);
             case MICRO_LEVELING -> {
