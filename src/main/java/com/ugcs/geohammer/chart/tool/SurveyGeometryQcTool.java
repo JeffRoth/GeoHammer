@@ -49,6 +49,10 @@ public class SurveyGeometryQcTool extends FilterToolView {
 
     private final TextField previewSpacingInput = new TextField();
 
+    private final Button decreasePreviewSpacing = new Button("\u25bc");
+
+    private final Button increasePreviewSpacing = new Button("\u25b2");
+
     private final Button usePreviewButton = new Button("Use preview");
 
     private final CheckBox showLineFamilies = new CheckBox("Show line families on map");
@@ -116,6 +120,8 @@ public class SurveyGeometryQcTool extends FilterToolView {
                 recommendationGroup);
         tieLineSpacingSlider.valueProperty().addListener((observable, oldValue, newValue) -> updateSpacingPreview());
         previewSpacingInput.setOnAction(e -> onPreviewSpacingEntered());
+        decreasePreviewSpacing.setOnAction(e -> adjustPreviewSpacing(-1));
+        increasePreviewSpacing.setOnAction(e -> adjustPreviewSpacing(1));
         usePreviewButton.setOnAction(e -> usePreviewSpacing());
         showLineFamilies.setOnAction(e -> updateLineFamilyOverlay());
         clearReport();
@@ -173,7 +179,7 @@ public class SurveyGeometryQcTool extends FilterToolView {
         previewSpacingInput.setPromptText("m");
         previewSpacingInput.setPrefColumnCount(5);
         HBox box = new HBox(Views.DEFAULT_SPACING, new Label("Preview spacing"), tieLineSpacingSlider,
-                previewSpacing, previewSpacingInput, usePreviewButton);
+                previewSpacing, decreasePreviewSpacing, increasePreviewSpacing, previewSpacingInput, usePreviewButton);
         HBox.setHgrow(tieLineSpacingSlider, Priority.ALWAYS);
         box.getStyleClass().add("group");
         return box;
@@ -213,6 +219,8 @@ public class SurveyGeometryQcTool extends FilterToolView {
         tieLineDensity.setDensity(java.util.List.of(), java.util.List.of());
         tieLineSpacingSlider.setDisable(true);
         previewSpacingInput.setDisable(true);
+        decreasePreviewSpacing.setDisable(true);
+        increasePreviewSpacing.setDisable(true);
         usePreviewButton.setDisable(true);
         detectedTieLineSpacing = Double.NaN;
         selectedTieLineSpacing = Double.NaN;
@@ -261,6 +269,8 @@ public class SurveyGeometryQcTool extends FilterToolView {
         if (report.tieLineDensityPositions().size() < 2 || !Double.isFinite(report.tieLinePeakSpacing())) {
             tieLineSpacingSlider.setDisable(true);
             previewSpacingInput.setDisable(true);
+            decreasePreviewSpacing.setDisable(true);
+            increasePreviewSpacing.setDisable(true);
             usePreviewButton.setDisable(true);
             previewSpacing.setText("n/a");
             return;
@@ -271,12 +281,14 @@ public class SurveyGeometryQcTool extends FilterToolView {
                 : 100.0;
         tieLineSpacingSlider.setMin(Math.max(10.0, minimum));
         tieLineSpacingSlider.setMax(Math.max(minimum * 2.0, range / 2.0));
-        tieLineSpacingSlider.setValue(Math.clamp(report.tieLinePeakSpacing(), tieLineSpacingSlider.getMin(),
-                tieLineSpacingSlider.getMax()));
         tieLineSpacingSlider.setDisable(false);
         previewSpacingInput.setDisable(false);
-        usePreviewButton.setDisable(false);
+        decreasePreviewSpacing.setDisable(false);
+        increasePreviewSpacing.setDisable(false);
+        tieLineSpacingSlider.setValue(Math.clamp(report.tieLinePeakSpacing(), tieLineSpacingSlider.getMin(),
+                tieLineSpacingSlider.getMax()));
         updateSpacingPreview();
+        Platform.runLater(this::updateSpacingPreview);
     }
 
     private void updateSpacingPreview() {
@@ -306,6 +318,11 @@ public class SurveyGeometryQcTool extends FilterToolView {
         } catch (NumberFormatException exception) {
             previewSpacingInput.setText(format(tieLineSpacingSlider.getValue()));
         }
+    }
+
+    private void adjustPreviewSpacing(int direction) {
+        double value = tieLineSpacingSlider.getValue() + direction;
+        tieLineSpacingSlider.setValue(Math.clamp(value, tieLineSpacingSlider.getMin(), tieLineSpacingSlider.getMax()));
     }
 
     private void usePreviewSpacing() {

@@ -85,7 +85,7 @@ public class CrossoverLevelingTool extends FilterToolView {
 
         correctionModelSelector = new ComboBox<>();
         correctionModelSelector.getItems().setAll(TieLineCorrectionModel.values());
-        correctionModelSelector.setValue(TieLineCorrectionModel.MEDIAN);
+        correctionModelSelector.setValue(TieLineCorrectionModel.SPLINE);
         correctionModelSelector.setMaxWidth(Double.MAX_VALUE);
         correctionModelSelector.setOnAction(event -> updateCorrectionModel());
 

@@ -5,11 +5,15 @@ import javafx.scene.canvas.GraphicsContext;
 import javafx.scene.layout.Region;
 import javafx.scene.paint.Color;
 
+import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 
 class HistogramView extends Region {
 
     private static final int BINS = 18;
+
+    private static final double UPPER_WHISKER_MULTIPLIER = 3.0;
 
     private final Canvas canvas = new Canvas();
 
@@ -68,6 +72,9 @@ class HistogramView extends Region {
                 maximum = Math.max(maximum, value);
             }
         }
+        if (!Double.isFinite(axisMaximum)) {
+            maximum = robustMaximum(values, maximum);
+        }
         if (maximum == minimum) {
             maximum = minimum + 1.0;
         }
@@ -87,6 +94,25 @@ class HistogramView extends Region {
             graphics.fillRect(i * barWidth + 1, height - 16 - barHeight, Math.max(1, barWidth - 2), barHeight);
         }
         drawAxis(graphics, width, height, minimum, maximum);
+    }
+
+    private static double robustMaximum(List<Double> values, double maximum) {
+        if (values.size() < 4) {
+            return maximum;
+        }
+        List<Double> sorted = new ArrayList<>(values);
+        sorted.sort(Comparator.naturalOrder());
+        double lowerQuartile = percentile(sorted, 0.25);
+        double upperQuartile = percentile(sorted, 0.75);
+        double upperWhisker = upperQuartile + UPPER_WHISKER_MULTIPLIER * (upperQuartile - lowerQuartile);
+        return Math.min(maximum, upperWhisker);
+    }
+
+    private static double percentile(List<Double> sorted, double percentile) {
+        double index = percentile * (sorted.size() - 1);
+        int lower = (int) Math.floor(index);
+        int upper = (int) Math.ceil(index);
+        return sorted.get(lower) + (sorted.get(upper) - sorted.get(lower)) * (index - lower);
     }
 
     private static void drawAxis(GraphicsContext graphics, double width, double height, double minimum, double maximum) {
