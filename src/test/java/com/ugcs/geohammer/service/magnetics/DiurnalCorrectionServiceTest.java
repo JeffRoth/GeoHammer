@@ -4,9 +4,11 @@ import com.ugcs.geohammer.format.GeoData;
 import com.ugcs.geohammer.model.ColumnSchema;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 class DiurnalCorrectionServiceTest {
@@ -53,6 +55,18 @@ class DiurnalCorrectionServiceTest {
 
         assertThrows(IllegalArgumentException.class,
                 () -> service.correct(List.of(survey), FIELD, base, FIELD, null));
+    }
+
+    @Test
+    void result_preservesMissingValuesFromLaggedInput() {
+        List<Number> values = new ArrayList<>();
+        values.add(null);
+        values.add(100.0);
+
+        DiurnalCorrectionResult result = new DiurnalCorrectionResult(values, 50.0);
+
+        assertNull(result.values().getFirst());
+        assertEquals(100.0, result.values().get(1));
     }
 
     private static GeoData sample(Long timestamp, double field) {

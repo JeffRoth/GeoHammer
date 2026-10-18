@@ -18,8 +18,11 @@ import javafx.application.Platform;
 import javafx.event.ActionEvent;
 import javafx.scene.control.CheckBox;
 import javafx.scene.control.ComboBox;
+import javafx.scene.control.Label;
 import javafx.scene.control.TextField;
 import javafx.util.StringConverter;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Component;
 
@@ -29,6 +32,8 @@ import java.util.concurrent.ExecutorService;
 
 @Component
 public class DiurnalCorrectionTool extends FilterToolView {
+
+    private static final Logger log = LoggerFactory.getLogger(DiurnalCorrectionTool.class);
 
     private final Model model;
 
@@ -47,6 +52,8 @@ public class DiurnalCorrectionTool extends FilterToolView {
     private final TextField outputSeriesInput;
 
     private final TextField referenceFieldInput;
+
+    private final Label diagnostics;
 
     public DiurnalCorrectionTool(Model model, DiurnalCorrectionService correctionService,
                                  MagneticProcessingWorkflow processingWorkflow, ExecutorService executor) {
@@ -86,13 +93,16 @@ public class DiurnalCorrectionTool extends FilterToolView {
         referenceFieldInput.setPromptText("Base-station median");
         referenceFieldInput.textProperty().addListener((observable, oldValue, newValue) -> validateInput());
 
+        diagnostics = new Label();
+
         inputContainer.getChildren().setAll(
                 new NodeWithTopLabel<>("Survey magnetic series", surveySeriesSelector),
                 new NodeWithTopLabel<>("Base source", synchronizedBaseSeries),
                 new NodeWithTopLabel<>("Base-station file", baseStationSelector),
                 new NodeWithTopLabel<>("Base-station magnetic series", baseStationSeriesSelector),
                 outputSeries,
-                referenceField
+                referenceField,
+                diagnostics
         );
         showApply(true);
     }
@@ -199,8 +209,18 @@ public class DiurnalCorrectionTool extends FilterToolView {
                 processingWorkflow.recordDiurnalCorrection(surveyChart.getFile(),
                         new DiurnalCorrectionOptions(surveySeries, outputSeries, baseStationSeries,
                                 useSynchronizedBaseSeries, result.referenceField()));
-            } catch (IllegalArgumentException e) {
-                Platform.runLater(() -> Dialogs.showError("Diurnal correction", e.getMessage()));
+                Platform.runLater(() -> diagnostics.setText("Created %s using %s.".formatted(outputSeries, surveySeries)));
+            } catch (Exception e) {
+                Platform.runLater(() -> {
+                    String message = e.getMessage() != null ? e.getMessage() : e.toString();
+                    int frames = Math.min(4, e.getStackTrace().length);
+                    for (int index = 0; index < frames; index++) {
+                        message += "\n" + e.getStackTrace()[index];
+                    }
+                    diagnostics.setText("Diurnal correction failed: " + message);
+                    Dialogs.showError("Diurnal correction", message);
+                });
+                log.error("Diurnal correction failed", e);
             }
             return null;
         });
