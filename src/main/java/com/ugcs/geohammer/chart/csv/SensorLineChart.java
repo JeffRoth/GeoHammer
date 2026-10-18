@@ -1251,6 +1251,10 @@ public class SensorLineChart extends Chart {
         applyFilter(filter, seriesName, "_LAG");
     }
 
+    public void createTimeLagSeries(String inputSeries, String outputSeries, int shift) {
+        applyFilterToSeries(new TimeLagFilter(shift), inputSeries, outputSeries);
+    }
+
     public void applyLowPass(String seriesName, int order) {
         LowPassFilter filter = new LowPassFilter(order);
         applyFilter(filter, seriesName, "_LPF");

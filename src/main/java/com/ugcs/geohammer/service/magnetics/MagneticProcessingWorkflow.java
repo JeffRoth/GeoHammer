@@ -5,6 +5,7 @@ import com.ugcs.geohammer.util.Check;
 import org.springframework.stereotype.Service;
 
 import java.time.Instant;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Set;
 
@@ -20,13 +21,14 @@ public class MagneticProcessingWorkflow {
     public void recordDiurnalCorrection(SgyFile file, DiurnalCorrectionOptions options) {
         Check.notNull(options);
         String source = options.synchronizedBaseSeries() ? "synchronized-series" : "base-station-file";
-        Map<String, String> settings = options.referenceField() != null
-                ? Map.of(
-                        "baseSource", source,
-                        "baseStationSeries", options.baseStationSeries(),
-                        "referenceField", Double.toString(options.referenceField())
-                )
-                : Map.of("baseSource", source, "baseStationSeries", options.baseStationSeries());
+        Map<String, String> settings = new LinkedHashMap<>();
+        settings.put("baseSource", source);
+        if (options.baseStationSeries() != null) {
+            settings.put("baseStationSeries", options.baseStationSeries());
+        }
+        if (options.referenceField() != null) {
+            settings.put("referenceField", Double.toString(options.referenceField()));
+        }
         record(file, MagneticProcessingStepType.DIURNAL_CORRECTION,
                 options.inputSeries(), options.outputSeries(), settings);
     }
